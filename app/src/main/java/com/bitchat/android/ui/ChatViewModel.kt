@@ -11,6 +11,7 @@ import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.model.BitchatMessageType
 import com.bitchat.android.protocol.BitchatPacket
+import com.bitchat.android.ui.debug.DebugMessage
 
 
 import kotlinx.coroutines.launch
@@ -147,7 +148,7 @@ class ChatViewModel(
                 mediaSendingManager.handleTransferProgressEvent(evt)
             }
         }
-        
+        debugManager?.addDebugMessage(DebugMessage.SystemMessage("ChatViewModel init, Hello World"))
         // Removed background location notes subscription. Notes now load only when sheet opens.
     }
 

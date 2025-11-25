@@ -2,7 +2,6 @@ package com.bitchat.android.mesh
 
 import android.util.Log
 import com.bitchat.android.model.BitchatMessage
-import com.bitchat.android.model.BitchatMessageType
 import com.bitchat.android.model.IdentityAnnouncement
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
@@ -10,14 +9,13 @@ import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
 import java.util.*
-import kotlin.random.Random
 
 /**
  * Handles processing of different message types
  * Extracted from BluetoothMeshService for better separation of concerns
  */
 class MessageHandler(private val myPeerID: String, private val appContext: android.content.Context) {
-    
+    private val debugManager by lazy { try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance() } catch (e: Exception) { null } }
     companion object {
         private const val TAG = "MessageHandler"
     }
@@ -144,7 +142,9 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     // Handle delivery ACK exactly like iOS
                     val messageID = String(noisePayload.data, Charsets.UTF_8)
                     Log.d(TAG, "📬 Delivery ACK received from $peerID for message $messageID")
-                    
+
+                    debugManager?.measureRTT(1)
+
                     // Simplified: Call delegate with messageID and peerID directly
                     delegate?.onDeliveryAckReceived(messageID, peerID)
                 }

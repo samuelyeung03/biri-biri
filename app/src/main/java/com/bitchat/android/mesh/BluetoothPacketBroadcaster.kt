@@ -2,7 +2,6 @@
 package com.bitchat.android.mesh
 
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattServer
 import android.util.Log
@@ -44,12 +43,11 @@ class BluetoothPacketBroadcaster(
     private val connectionTracker: BluetoothConnectionTracker,
     private val fragmentManager: FragmentManager?
 ) {
-    
+    private val debugManager by lazy { try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance() } catch (e: Exception) { null } }
     companion object {
         private const val TAG = "BluetoothPacketBroadcaster"
         private const val CLEANUP_DELAY = com.bitchat.android.util.AppConstants.Mesh.BROADCAST_CLEANUP_DELAY_MS
     }
-
     // Optional nickname resolver injected by higher layer (peerID -> nickname?)
     private var nicknameResolver: ((String) -> String?)? = null
 
@@ -264,6 +262,9 @@ class BluetoothPacketBroadcaster(
         gattServer: BluetoothGattServer?,
         characteristic: BluetoothGattCharacteristic?
     ) {
+        if (routed.packet.type.toInt() == 17){
+            debugManager?.measureRTT(0)
+        }
         // Submit broadcast request to actor for serialized processing
         broadcasterScope.launch {
             try {

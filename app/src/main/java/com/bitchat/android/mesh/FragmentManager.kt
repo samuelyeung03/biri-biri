@@ -27,7 +27,7 @@ class FragmentManager {
         private const val FRAGMENT_TIMEOUT = com.bitchat.android.util.AppConstants.Fragmentation.FRAGMENT_TIMEOUT_MS     // Matches iOS: 30 seconds cleanup
         private const val CLEANUP_INTERVAL = com.bitchat.android.util.AppConstants.Fragmentation.CLEANUP_INTERVAL_MS     // 10 seconds cleanup check
     }
-    
+    private val debugManager by lazy { try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance() } catch (e: Exception) { null } }
     // Fragment storage - iOS equivalent: incomingFragments: [String: [Int: Data]]
     private val incomingFragments = ConcurrentHashMap<String, MutableMap<Int, ByteArray>>()
     // iOS equivalent: fragmentMetadata: [String: (type: UInt8, total: Int, timestamp: Date)]
@@ -47,7 +47,7 @@ class FragmentManager {
      * Create fragments from a large packet - 100% iOS Compatible
      * Matches iOS sendFragmentedPacket() implementation exactly
      */
-    fun createFragments(packet: BitchatPacket): List<BitchatPacket> {
+    fun     createFragments(packet: BitchatPacket): List<BitchatPacket> {
         try {
             Log.d(TAG, "🔀 Creating fragments for packet type ${packet.type}, payload: ${packet.payload.size} bytes")
         val encoded = packet.toBinaryData()
@@ -159,10 +159,14 @@ class FragmentManager {
             
             // iOS: incomingFragments[fragmentID]?[index] = Data(fragmentData)
             incomingFragments[fragmentIDString]?.put(fragmentPayload.index, fragmentPayload.data)
+            if (fragmentPayload.index == 0){
+                debugManager?.measureBitrate(0,0)
+            }
             
             // iOS: if let fragments = incomingFragments[fragmentID], fragments.count == total
             val fragmentMap = incomingFragments[fragmentIDString]
             if (fragmentMap != null && fragmentMap.size == fragmentPayload.total) {
+                debugManager?.measureBitrate(1,fragmentMap.size)
                 Log.d(TAG, "All fragments received for $fragmentIDString, reassembling...")
                 
                 // iOS reassembly logic: for i in 0..<total { if let fragment = fragments[i] { reassembled.append(fragment) } }

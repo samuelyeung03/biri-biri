@@ -177,6 +177,42 @@ class DebugSettingsManager private constructor() {
         
         _debugMessages.value = debugMessageQueue.toList()
     }
+    // Measure RTT
+    private var lastSendTimestamp: Long? = null
+    // 0 for sent, 1 for ack
+    fun measureRTT(type: Int) {
+        val currentTime = System.currentTimeMillis()
+        if (type == 0) { // "send" event
+            lastSendTimestamp = currentTime
+            addDebugMessage(DebugMessage.SystemMessage("📤 Send timestamp recorded: $currentTime"))
+        } else { // "received" event
+            val sendTimestamp = lastSendTimestamp
+            if (sendTimestamp != null) {
+                val rtt = currentTime - sendTimestamp
+                addDebugMessage(DebugMessage.SystemMessage("📶 RTT measured: $rtt ms"))
+                lastSendTimestamp = null // Clear the stored timestamp after use
+            } else {
+                addDebugMessage(DebugMessage.SystemMessage("⚠️ RTT measurement failed: No 'send' timestamp found"))
+            }
+        }
+    }
+    private var startReceivingTimestamp: Long? = null
+    //0 for first packet, 1 for last packet
+    fun measureBitrate(type: Int, size: Int){
+        val currentTime = System.currentTimeMillis()
+        if (type == 0) { // start
+            startReceivingTimestamp = currentTime
+        } else {
+            val sendTimestamp = startReceivingTimestamp
+            if (sendTimestamp != null){
+                val duration = currentTime - sendTimestamp
+                val bitrate = size * 8 * 469 / duration
+                addDebugMessage(DebugMessage.SystemMessage("📶 Bitrate measured: $bitrate kbps, duration: $duration ms, size: $size Packets"))
+            } else {
+                addDebugMessage(DebugMessage.SystemMessage("⚠️ Bitrate measurement failed: No 'start' timestamp found"))
+            }
+        }
+    }
     
     fun addScanResult(scanResult: DebugScanResult) {
         // De-duplicate by device address; keep most recent
@@ -298,7 +334,7 @@ class DebugSettingsManager private constructor() {
         ttl: UByte?,
         isRelay: Boolean = true
     ) {
-        // Build message only if verbose logging is enabled, but always update stats
+        // Build messageaddMessage only if verbose logging is enabled, but always update stats
         val senderLabel = when {
             !senderNickname.isNullOrBlank() && !senderPeerID.isNullOrBlank() -> "$senderNickname ($senderPeerID)"
             !senderNickname.isNullOrBlank() -> senderNickname

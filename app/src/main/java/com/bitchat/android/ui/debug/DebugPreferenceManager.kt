@@ -29,7 +29,7 @@ object DebugPreferenceManager {
 
     private fun ready(): Boolean = ::prefs.isInitialized
 
-    fun getVerboseLogging(default: Boolean = false): Boolean =
+    fun getVerboseLogging(default: Boolean = true): Boolean =
         if (ready()) prefs.getBoolean(KEY_VERBOSE, default) else default
 
     fun setVerboseLogging(value: Boolean) {
