@@ -6,6 +6,7 @@ import com.bitchat.android.model.IdentityAnnouncement
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
+import com.bitchat.android.ui.debug.DebugMessage
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
 import java.util.*
@@ -163,7 +164,12 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
             Log.e(TAG, "Error processing Noise encrypted message from $peerID: ${e.message}")
         }
     }
-    
+    suspend fun handlePingPacket(routed: RoutedPacket){
+        val messageID = routed.packet.payload.toString()
+        val peerID = routed.packet.senderID.toString()
+        debugManager?.addDebugMessage(DebugMessage.SystemMessage("📤 Sent ping ACK to $peerID for message $messageID"))
+        sendDeliveryAck(messageID, peerID)
+    }
     /**
      * Send delivery ACK for a received private message - exactly like iOS
      */

@@ -42,7 +42,7 @@ class PrivateChatManager(
 
     // MARK: - Private Chat Lifecycle
 
-    fun startPrivateChat(peerID: String, meshService: BluetoothMeshService): Boolean {
+    fun startPrivateChat(peerID: String, meshService: BluetoothMeshService, showChat: Boolean = true): Boolean {
         if (isPeerBlocked(peerID)) {
             val peerNickname = getPeerNickname(peerID, meshService)
             val systemMessage = BitchatMessage(
@@ -63,7 +63,7 @@ class PrivateChatManager(
             consolidateNostrTempConversationIfNeeded(peerID)
         } catch (_: Exception) { }
 
-        state.setSelectedPrivateChatPeer(peerID)
+        if(showChat) state.setSelectedPrivateChatPeer(peerID)
 
         // Clear unread
         messageManager.clearPrivateUnreadMessages(peerID)

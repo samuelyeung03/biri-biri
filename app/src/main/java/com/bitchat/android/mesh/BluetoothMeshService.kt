@@ -12,11 +12,13 @@ import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.protocol.SpecialRecipients
 import com.bitchat.android.model.RequestSyncPacket
 import com.bitchat.android.sync.GossipSyncManager
+import com.bitchat.android.ui.MessageManager
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
 import java.util.*
 import kotlin.math.sign
 import kotlin.random.Random
+import kotlin.text.toByteArray
 
 /**
  * Bluetooth mesh service - REFACTORED to use component-based architecture
@@ -472,6 +474,10 @@ class BluetoothMeshService(private val context: Context) {
                 val req = RequestSyncPacket.decode(routed.packet.payload) ?: return
                 gossipSyncManager.handleRequestSync(fromPeer, req)
             }
+
+            override fun handelPingPacket(routed: RoutedPacket) {
+                serviceScope.launch { messageHandler.handlePingPacket(routed)}
+            }
         }
         
         // BluetoothConnectionManager delegates
@@ -791,6 +797,51 @@ class BluetoothMeshService(private val context: Context) {
                 // FIXED: Don't send didReceiveMessage for our own sent messages
                 // The UI will handle showing the message in the chat interface
             }
+        }
+    }
+    fun sendPingPacket(recipientPeerID: String, recipientNickname: String, messageID: String? = null) {
+        if (recipientPeerID.isEmpty()) return
+        if (recipientNickname.isEmpty()) return
+        if (encryptionService.hasEstablishedSession(recipientPeerID))
+            serviceScope.launch {
+                val finalMessageID = messageID ?: java.util.UUID.randomUUID().toString()
+                // Create TLV-encoded private message exactly like iOS
+                val privateMessage = com.bitchat.android.model.PrivateMessagePacket(
+                    messageID = finalMessageID,
+                    content = "pingpingpingpingping"
+                )
+
+                val tlvData = privateMessage.encode()
+                if (tlvData == null) {
+                    Log.e(TAG, "Failed to encode private message with TLV")
+                    return@launch
+                }
+
+                // Create message payload with NoisePayloadType prefix: [type byte] + [TLV data]
+                val messagePayload = com.bitchat.android.model.NoisePayload(
+                    type = com.bitchat.android.model.NoisePayloadType.PRIVATE_MESSAGE,
+                    data = tlvData
+                )
+
+                // Encrypt the payload
+                val encrypted = encryptionService.encrypt(messagePayload.encode(), recipientPeerID)
+
+                // Create NOISE_ENCRYPTED packet exactly like iOS
+                val packet = BitchatPacket(
+                    version = 1u,
+                    type = MessageType.PING.value,
+                    senderID = hexStringToByteArray(myPeerID),
+                    recipientID = hexStringToByteArray(recipientPeerID),
+                    timestamp = System.currentTimeMillis().toULong(),
+                    payload = encrypted,
+                    signature = null,
+                    ttl = MAX_TTL
+                )
+                val signed = signPacketBeforeBroadcast(packet)
+                connectionManager.broadcastPacket(RoutedPacket(signed))
+                Log.d(TAG, "📤 Sent ping packet to $recipientPeerID")
+        } else {
+            messageHandler.delegate?.initiateNoiseHandshake(recipientPeerID)
         }
     }
     

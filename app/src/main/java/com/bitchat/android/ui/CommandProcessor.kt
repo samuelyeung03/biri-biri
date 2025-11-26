@@ -2,6 +2,10 @@ package com.bitchat.android.ui
 
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.model.BitchatMessage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.util.Date
 
 /**
@@ -13,9 +17,11 @@ class CommandProcessor(
     private val channelManager: ChannelManager,
     private val privateChatManager: PrivateChatManager
 ) {
-    
+    //user for ping
+    private val scope = CoroutineScope(Dispatchers.Main)
     // Available commands list
     private val baseCommands = listOf(
+        CommandSuggestion("/ping",listOf(), "<nickname>", "ping a peer"),
         CommandSuggestion("/block", emptyList(), "[nickname]", "block or list blocked peers"),
         CommandSuggestion("/channels", emptyList(), null, "show all discovered channels"),
         CommandSuggestion("/clear", emptyList(), null, "clear chat messages"),
@@ -26,7 +32,7 @@ class CommandProcessor(
         CommandSuggestion("/unblock", emptyList(), "<nickname>", "unblock a peer"),
         CommandSuggestion("/w", emptyList(), null, "see who's online")
     )
-    
+
     // MARK: - Command Processing
     
     fun processCommand(command: String, meshService: BluetoothMeshService, myPeerID: String, onSendMessage: (String, List<String>, String?) -> Unit, viewModel: ChatViewModel? = null): Boolean {
@@ -45,6 +51,7 @@ class CommandProcessor(
             "/hug" -> handleActionCommand(parts, "gives", "a warm hug 🫂", meshService, myPeerID, onSendMessage)
             "/slap" -> handleActionCommand(parts, "slaps", "around a bit with a large trout 🐟", meshService, myPeerID, onSendMessage)
             "/channels" -> handleChannelsCommand()
+            "/ping" -> handlePingCommand(parts, meshService)
             else -> handleUnknownCommand(cmd)
         }
         
@@ -356,7 +363,42 @@ class CommandProcessor(
         )
         messageManager.addMessage(systemMessage)
     }
-    
+    private fun handlePingCommand(parts: List<String>, meshService: BluetoothMeshService){
+        if (parts.size > 1) {
+            val targetName = parts[1].removePrefix("@")
+            val peerID = getPeerIDForNickname(targetName, meshService)
+
+            if (peerID != null) {
+                val success = privateChatManager.startPrivateChat(peerID, meshService, false)
+                if (success){
+                    var n = 1
+                    if (parts.size > 2) {
+                        n = parts[2].toInt()
+                    }
+                    val recipientNickname = getPeerNickname(peerID, meshService)
+                    scope.launch {
+                        sendPingPacketVia(meshService, peerID,recipientNickname,n)
+                    }
+                }
+            } else {
+                val systemMessage = BitchatMessage(
+                    sender = "system",
+                    content = "user '$targetName' not found. they may be offline or using a different nickname.",
+                    timestamp = Date(),
+                    isRelay = false
+                )
+                messageManager.addMessage(systemMessage)
+            }
+        } else {
+            val systemMessage = BitchatMessage(
+                sender = "system",
+                content = "usage: /ping <nickname>",
+                timestamp = Date(),
+                isRelay = false
+            )
+            messageManager.addMessage(systemMessage)
+        }
+    }
     private fun handleUnknownCommand(cmd: String) {
         val systemMessage = BitchatMessage(
             sender = "system",
@@ -517,5 +559,28 @@ class CommandProcessor(
     
     private fun sendPrivateMessageVia(meshService: BluetoothMeshService, content: String, peerID: String, recipientNickname: String, messageId: String) {
         meshService.sendPrivateMessage(content, peerID, recipientNickname, messageId)
+    }
+    private suspend fun sendPingPacketVia(meshService: BluetoothMeshService, peerID: String, recipientNickname: String, loops: Int) {
+        meshService.sendPingPacket(peerID, recipientNickname)
+        val systemMessage = BitchatMessage(
+            sender = "system",
+            content = "Pinging $recipientNickname with 32 bytes of data",
+            timestamp = Date(),
+            isRelay = false
+        )
+        messageManager.addMessage(systemMessage)
+        if (loops > 1){
+            for (i in 1 until loops){
+                meshService.sendPingPacket(peerID, recipientNickname)
+                val systemMessage = BitchatMessage(
+                    sender = "system",
+                    content = "Pinging $recipientNickname with 36 bytes of data",
+                    timestamp = Date(),
+                    isRelay = false
+                )
+                messageManager.addMessage(systemMessage)
+                delay(1000)
+            }
+        }
     }
 }
