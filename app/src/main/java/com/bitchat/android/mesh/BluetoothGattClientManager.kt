@@ -397,6 +397,7 @@ class BluetoothGattClientManager(
                     connectionScope.launch {
                         delay(200) // A small delay can improve reliability of MTU request.
                         gatt.requestMtu(517)
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                     }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -557,4 +558,4 @@ class BluetoothGattClientManager(
             }
         }
     }
-} 
+}
