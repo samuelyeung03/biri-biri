@@ -117,41 +117,6 @@ class PrivateChatManager(
         return true
     }
 
-    fun sendPingPacket(
-        peerID: String,
-        recipientNickname: String?,
-        senderNickname: String?,
-        myPeerID: String,
-        onSendMessage: (String, String, String, String) -> Unit
-    ): Boolean {
-        val content = "pingpingpingping"
-        if (isPeerBlocked(peerID)) {
-            val systemMessage = BitchatMessage(
-                sender = "system",
-                content = "cannot ping to $recipientNickname: user is blocked.",
-                timestamp = Date(),
-                isRelay = false
-            )
-            messageManager.addMessage(systemMessage)
-            return false
-        }
-
-        val message = BitchatMessage(
-            sender = senderNickname ?: myPeerID,
-            content = content,
-            timestamp = Date(),
-            isRelay = false,
-            isPrivate = true,
-            recipientNickname = recipientNickname,
-            senderPeerID = myPeerID,
-            deliveryStatus = DeliveryStatus.Sending
-        )
-
-        messageManager.addPingPacket(peerID, message)
-        onSendMessage(content, peerID, recipientNickname ?: "", message.id)
-
-        return true
-    }
 
 
     // MARK: - Peer Management

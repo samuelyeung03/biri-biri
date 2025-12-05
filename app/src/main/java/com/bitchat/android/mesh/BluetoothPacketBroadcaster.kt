@@ -5,8 +5,12 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattServer
 import android.util.Log
+import com.bitchat.android.model.BitchatFilePacket
+import com.bitchat.android.model.BitchatMessageType
+import com.bitchat.android.model.NoisePayloadType
 import com.bitchat.android.protocol.SpecialRecipients
 import com.bitchat.android.model.RoutedPacket
+import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.CoroutineScope
@@ -305,6 +309,9 @@ class BluetoothPacketBroadcaster(
             // If found, send directly
             if (targetDevice != null) {
                 Log.d(TAG, "Send packet type ${packet.type} directly to target device for recipient $recipientID: ${targetDevice.address}")
+                if (packet.type == ){
+
+                }
                 if (notifyDevice(targetDevice, data, gattServer, characteristic)) {
                     val toPeer = connectionTracker.addressPeerMap[targetDevice.address]
                     logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, toPeer, targetDevice.address, packet.ttl)
@@ -408,6 +415,7 @@ class BluetoothPacketBroadcaster(
         return try {
             deviceConn.characteristic?.let { char ->
                 char.value = data
+                char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 val result = deviceConn.gatt?.writeCharacteristic(char) ?: false
                 result
             } ?: false

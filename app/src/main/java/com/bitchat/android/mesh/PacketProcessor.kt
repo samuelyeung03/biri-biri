@@ -245,11 +245,11 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing REQUEST_SYNC from ${formatPeerForLog(peerID)}")
         delegate?.handleRequestSync(routed)
     }
-    private suspend fun handlePing(routed: RoutedPacket) {
-        val peerID = routed.peerID ?: "unknown"
-        Log.d(TAG, "Processing Ping from ${formatPeerForLog(peerID)}")
-        delegate?.handleMessage(routed)
-    }
+//    private suspend fun handlePing(routed: RoutedPacket) {
+//        val peerID = routed.peerID ?: "unknown"
+//        Log.d(TAG, "Processing Ping from ${formatPeerForLog(peerID)}")
+//        delegate?.handleMessage(routed)
+//    }
     /**
      * Handle delivery acknowledgment
      */

@@ -9,6 +9,7 @@ import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.ui.debug.DebugMessage
 import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
+import java.sql.Timestamp
 import java.util.*
 
 /**
@@ -170,10 +171,6 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
             Log.e(TAG, "Error processing Noise encrypted message from $peerID: ${e.message}")
         }
     }
-    suspend fun handlePingPacket(routed: RoutedPacket){
-
-
-    }
     /**
      * Send delivery ACK for a received private message - exactly like iOS
      */
@@ -211,7 +208,26 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
             Log.e(TAG, "Failed to send delivery ACK to $senderPeerID: ${e.message}")
         }
     }
-    
+    private fun sendPong(payload: ByteArray, senderPeerID: String, timestamp: ULong){
+        try {
+            val packet = BitchatPacket(
+                version = 1u,
+                type = MessageType.PONG.value,
+                senderID = hexStringToByteArray(myPeerID),
+                recipientID = hexStringToByteArray(senderPeerID),
+                timestamp = timestamp,
+                payload = payload,
+                signature = null,
+                ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS // Same TTL as iOS messageTTL
+            )
+
+            delegate?.sendPacket(packet)
+            Log.d(TAG, "📤 Sent pong to $senderPeerID for message $messageID")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send pong to $senderPeerID: ${e.message}")
+        }
+    }
     /**
      * Handle announce message with TLV decoding and signature verification - exactly like iOS
      */
@@ -427,6 +443,13 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
      */
     private suspend fun handlePrivateMessage(packet: BitchatPacket, peerID: String) {
         try {
+            if (packet.type == MessageType.PING.value){
+                sendPong(packet.payload,peerID,packet.timestamp)
+                return
+            }
+            if (packet.type == MessageType.PONG.value){
+
+            }
             // Verify signature if present
             if (packet.signature != null && !delegate?.verifySignature(packet, peerID)!!) {
                 Log.w(TAG, "Invalid signature for private message from $peerID")
@@ -621,4 +644,5 @@ interface MessageHandlerDelegate {
     fun onChannelLeave(channel: String, fromPeer: String)
     fun onDeliveryAckReceived(messageID: String, peerID: String)
     fun onReadReceiptReceived(messageID: String, peerID: String)
+    fun onPongReceived()
 }

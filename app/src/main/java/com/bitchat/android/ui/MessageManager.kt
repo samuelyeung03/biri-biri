@@ -227,27 +227,27 @@ class MessageManager(private val state: ChatState) {
     
     fun updateMessageDeliveryStatus(messageID: String, status: DeliveryStatus) {
         var updated = false
-        val pingPackets = state.getPingPacketsValue().toMutableMap()
-        if (pingPackets.isNotEmpty()){
-           pingPackets.forEach { (peerID, messages) ->
-               val updatedMessages = messages.toMutableList()
-               val messageIndex = updatedMessages.indexOfFirst { (messages) -> messages.id == messageID }
-               if (messageIndex >= 0) {
-                   val (_,timestamp) = updatedMessages[messageIndex]
-                   val rtt = System.currentTimeMillis() - timestamp
-                   updatedMessages.removeAt(messageIndex)
-                   val systemMessage = BitchatMessage(
-                       sender = "system",
-                       content = "received ack, RTT: $rtt",
-                       timestamp = Date(),
-                       isRelay = false
-                   )
-                   addMessage(systemMessage)
-                   state.addRttValues(rtt)
-                   return
-               }
-           }
-        }
+//        val pingPackets = state.getPingPacketsValue().toMutableMap()
+//        if (pingPackets.isNotEmpty()){
+//           pingPackets.forEach { (peerID, messages) ->
+//               val updatedMessages = messages.toMutableList()
+//               val messageIndex = updatedMessages.indexOfFirst { (messages) -> messages.id == messageID }
+//               if (messageIndex >= 0) {
+//                   val (_,timestamp) = updatedMessages[messageIndex]
+//                   val rtt = System.currentTimeMillis() - timestamp
+//                   updatedMessages.removeAt(messageIndex)
+//                   val systemMessage = BitchatMessage(
+//                       sender = "system",
+//                       content = "received ack, RTT: $rtt",
+//                       timestamp = Date(),
+//                       isRelay = false
+//                   )
+//                   addMessage(systemMessage)
+//                   state.addRttValues(rtt)
+//                   return
+//               }
+//           }
+//        }
         // Update in private chats
         val updatedPrivateChats = state.getPrivateChatsValue().toMutableMap()
         

@@ -564,14 +564,9 @@ class CommandProcessor(
     }
     private suspend fun sendPingPacketVia(meshService: BluetoothMeshService, peerID: String, recipientNickname: String, loops: Int) {
         for (i in 0 until loops) {
-            privateChatManager.sendPingPacket(
-                peerID,
-                recipientNickname,
-                state.getNicknameValue(),
-                getMyPeerID(meshService)
-            ) { content, peerIdParam, recipientNicknameParam, messageId ->
-                meshService.sendPingPacket(content, peerIdParam, recipientNicknameParam, messageId)
-            }
+            val messageId = java.util.UUID.randomUUID().toString()
+            meshService.sendPingPacket(peerID, recipientNickname, messageId)
+
             val systemMessage = BitchatMessage(
                 sender = "system",
                 content = "Pinging $recipientNickname with 32 bytes of data",
@@ -579,7 +574,7 @@ class CommandProcessor(
                 isRelay = false
             )
             messageManager.addMessage(systemMessage)
-            delay(1000)
+            delay(80)
         }
         val rttValues = state.getRttValues()
         state.clearRtt()

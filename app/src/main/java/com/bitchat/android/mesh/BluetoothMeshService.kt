@@ -368,6 +368,10 @@ class BluetoothMeshService(private val context: Context) {
             override fun onReadReceiptReceived(messageID: String, peerID: String) {
                 delegate?.didReceiveReadReceipt(messageID, peerID)
             }
+
+            override fun onPongReceived() {
+                TODO("Not yet implemented")
+            }
         }
         
         // PacketProcessor delegates
@@ -795,41 +799,19 @@ class BluetoothMeshService(private val context: Context) {
             }
         }
     }
-    fun sendPingPacket(content: String, recipientPeerID: String, recipientNickname: String, messageID: String? = null) {
+    fun sendPingPacket(content: String, recipientPeerID: String, recipientNickname: String, messageID: String) {
         if (recipientPeerID.isEmpty()) return
         if (recipientNickname.isEmpty()) return
         if (encryptionService.hasEstablishedSession(recipientPeerID))
             serviceScope.launch {
-                val finalMessageID = messageID ?: java.util.UUID.randomUUID().toString()
-                // Create TLV-encoded private message exactly like iOS
-                val privateMessage = com.bitchat.android.model.PrivateMessagePacket(
-                    messageID = finalMessageID,
-                    content = content
-                )
-
-                val tlvData = privateMessage.encode()
-                if (tlvData == null) {
-                    Log.e(TAG, "Failed to encode private message with TLV")
-                    return@launch
-                }
-
-                // Create message payload with NoisePayloadType prefix: [type byte] + [TLV data]
-                val messagePayload = com.bitchat.android.model.NoisePayload(
-                    type = com.bitchat.android.model.NoisePayloadType.PING,
-                    data = tlvData
-                )
-
-                // Encrypt the payload
-                val encrypted = encryptionService.encrypt(messagePayload.encode(), recipientPeerID)
-
-                // Create NOISE_ENCRYPTED packet exactly like iOS
+                val payload = messageID.toByteArray()
                 val packet = BitchatPacket(
                     version = 1u,
                     type = MessageType.NOISE_ENCRYPTED.value,
                     senderID = hexStringToByteArray(myPeerID),
                     recipientID = hexStringToByteArray(recipientPeerID),
                     timestamp = System.currentTimeMillis().toULong(),
-                    payload = encrypted,
+                    payload = payload,
                     signature = null,
                     ttl = MAX_TTL
                 )
