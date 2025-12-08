@@ -9,6 +9,7 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import com.bitchat.android.protocol.BitchatPacket
+import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.util.AppConstants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -395,6 +396,25 @@ class BluetoothGattClientManager(
             ) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     Log.d(TAG, "Client: Characteristic write successful to $deviceAddress")
+
+                    // If this write was a ping packet, try to record RTT (best-effort)
+                    try {
+                        val charValue = characteristic?.value
+                        if (charValue != null) {
+                            val pkt = BitchatPacket.fromBinaryData(charValue)
+                            if (pkt != null && pkt.type == MessageType.PING.value) {
+                                // Find peer id for this device address
+                                val peerId = connectionTracker.addressPeerMap[deviceAddress]
+                                if (peerId != null) {
+                                    val rtt = NetworkMetricsManager.recordPongByPeer(peerId)
+                                    if (rtt != null) {
+                                        Log.i(TAG, "Client: RTT recorded for peer $peerId: ${rtt} ms")
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_: Exception) { /* ignore */ }
+
                 } else {
                     Log.e(
                         TAG,

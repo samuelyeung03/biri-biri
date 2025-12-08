@@ -575,12 +575,12 @@ class CommandProcessor(
                 isRelay = false
             )
             messageManager.addMessage(systemMessage)
-            delay(80)
+            delay(150)
         }
         val metrics = NetworkMetricsManager.getPingResult(peerID)
         val systemMessage = BitchatMessage(
             sender = "system",
-            content = "Pinged $loops packets with average rtt:  ${metrics?.averageRTT}, ${metrics?.packetLost?.div(
+            content = "Pinged $loops packets with average rtt:  ${metrics?.averageRTT}, peerRTT: ${metrics?.averageRTTPeer}, ${metrics?.packetLost?.div(
                 loops
             )} % packet lost",
             timestamp = Date(),
