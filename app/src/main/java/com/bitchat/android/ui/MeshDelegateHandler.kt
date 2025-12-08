@@ -23,7 +23,9 @@ class MeshDelegateHandler(
     private val getMyPeerID: () -> String,
     private val getMeshService: () -> BluetoothMeshService
 ) : BluetoothMeshDelegate {
-
+    override fun didReceivePong(messageID: String, fromPeer: String) {
+        state.getPingPacketsValue()
+    }
     override fun didReceiveMessage(message: BitchatMessage) {
         coroutineScope.launch {
             // FIXED: Deduplicate messages from dual connection paths

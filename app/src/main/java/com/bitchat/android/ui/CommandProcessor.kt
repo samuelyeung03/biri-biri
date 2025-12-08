@@ -565,7 +565,7 @@ class CommandProcessor(
     private suspend fun sendPingPacketVia(meshService: BluetoothMeshService, peerID: String, recipientNickname: String, loops: Int) {
         for (i in 0 until loops) {
             val messageId = java.util.UUID.randomUUID().toString()
-            meshService.sendPingPacket(peerID, recipientNickname, messageId)
+            meshService.sendPingPacket(messageId, peerID,recipientNickname,messageId)
 
             val systemMessage = BitchatMessage(
                 sender = "system",

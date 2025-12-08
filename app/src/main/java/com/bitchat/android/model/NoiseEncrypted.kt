@@ -21,7 +21,6 @@ enum class NoisePayloadType(val value: UByte) {
     PRIVATE_MESSAGE(0x01u),     // Private chat message with TLV encoding
     READ_RECEIPT(0x02u),        // Message was read
     DELIVERED(0x03u),           // Message was delivered
-    PING(0x4u),
     FILE_TRANSFER(0x20u);
 
 

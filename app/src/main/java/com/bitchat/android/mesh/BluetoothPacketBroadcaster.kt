@@ -180,6 +180,9 @@ class BluetoothPacketBroadcaster(
         if (transferId != null) {
             TransferProgressManager.start(transferId, 1)
         }
+        if (routed.packet.type == MessageType.PING.value){
+
+        }
         broadcastSinglePacket(routed, gattServer, characteristic)
         if (transferId != null) {
             TransferProgressManager.progress(transferId, 1, 1)

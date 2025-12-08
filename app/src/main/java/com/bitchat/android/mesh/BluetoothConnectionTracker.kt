@@ -25,7 +25,6 @@ class BluetoothConnectionTracker(
         private const val CLEANUP_DELAY = com.bitchat.android.util.AppConstants.Mesh.CONNECTION_CLEANUP_DELAY_MS
         private const val CLEANUP_INTERVAL = com.bitchat.android.util.AppConstants.Mesh.CONNECTION_CLEANUP_INTERVAL_MS // 30 seconds
     }
-    
     // Connection tracking - reduced memory footprint
     private val connectedDevices = ConcurrentHashMap<String, DeviceConnection>()
     private val subscribedDevices = CopyOnWriteArrayList<BluetoothDevice>()
@@ -85,7 +84,20 @@ class BluetoothConnectionTracker(
         cleanupAllConnections()
         clearAllConnections()
     }
-    
+
+    /**
+     * Add a ping packet record
+     */
+    fun addPingPacket(messageId: String) {
+        pingPackets[messageId] = System.currentTimeMillis()
+    }
+    /**
+     * clear all ping packets
+     */
+    fun clearPingPackets() {
+        pingPackets.clear()
+    }
+
     /**
      * Add a device connection
      */

@@ -369,8 +369,8 @@ class BluetoothMeshService(private val context: Context) {
                 delegate?.didReceiveReadReceipt(messageID, peerID)
             }
 
-            override fun onPongReceived() {
-                TODO("Not yet implemented")
+            override fun onPongReceived(messageID: String, peerID: String) {
+                delegate?.didReceivePong(messageID, peerID)
             }
         }
         
@@ -815,8 +815,7 @@ class BluetoothMeshService(private val context: Context) {
                     signature = null,
                     ttl = MAX_TTL
                 )
-                val signed = signPacketBeforeBroadcast(packet)
-                connectionManager.broadcastPacket(RoutedPacket(signed))
+                connectionManager.broadcastPacket(RoutedPacket(packet))
                 Log.d(TAG, "📤 Sent ping packet to $recipientPeerID")
         } else {
             messageHandler.delegate?.initiateNoiseHandshake(recipientPeerID)
@@ -1206,6 +1205,7 @@ class BluetoothMeshService(private val context: Context) {
  * Delegate interface for mesh service callbacks (maintains exact same interface)
  */
 interface BluetoothMeshDelegate {
+    fun didReceivePong(messageID: String, fromPeer: String)
     fun didReceiveMessage(message: BitchatMessage)
     fun didUpdatePeerList(peers: List<String>)
     fun didReceiveChannelLeave(channel: String, fromPeer: String)
