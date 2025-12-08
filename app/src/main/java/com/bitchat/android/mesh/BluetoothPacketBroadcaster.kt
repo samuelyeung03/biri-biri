@@ -180,9 +180,6 @@ class BluetoothPacketBroadcaster(
         if (transferId != null) {
             TransferProgressManager.start(transferId, 1)
         }
-        if (routed.packet.type == MessageType.PING.value){
-
-        }
         broadcastSinglePacket(routed, gattServer, characteristic)
         if (transferId != null) {
             TransferProgressManager.progress(transferId, 1, 1)
@@ -312,9 +309,6 @@ class BluetoothPacketBroadcaster(
             // If found, send directly
             if (targetDevice != null) {
                 Log.d(TAG, "Send packet type ${packet.type} directly to target device for recipient $recipientID: ${targetDevice.address}")
-                if (packet.type == ){
-
-                }
                 if (notifyDevice(targetDevice, data, gattServer, characteristic)) {
                     val toPeer = connectionTracker.addressPeerMap[targetDevice.address]
                     logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, toPeer, targetDevice.address, packet.ttl)
@@ -340,7 +334,7 @@ class BluetoothPacketBroadcaster(
         // Else, continue with broadcasting to all devices
         val subscribedDevices = connectionTracker.getSubscribedDevices()
         val connectedDevices = connectionTracker.getConnectedDevices()
-        
+
         Log.i(TAG, "Broadcasting packet type ${packet.type} to ${subscribedDevices.size} server + ${connectedDevices.size} client connections")
 
         val senderID = String(packet.senderID).replace("\u0000", "")        

@@ -1,6 +1,7 @@
 package com.bitchat.android.ui
 
 import com.bitchat.android.mesh.BluetoothMeshService
+import com.bitchat.android.mesh.NetworkMetricsManager
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.model.BitchatMessageType
 import com.bitchat.android.protocol.MessageType
@@ -563,10 +564,10 @@ class CommandProcessor(
         meshService.sendPrivateMessage(content, peerID, recipientNickname, messageId)
     }
     private suspend fun sendPingPacketVia(meshService: BluetoothMeshService, peerID: String, recipientNickname: String, loops: Int) {
+        NetworkMetricsManager.startPing(peerID)
         for (i in 0 until loops) {
             val messageId = java.util.UUID.randomUUID().toString()
-            meshService.sendPingPacket(messageId, peerID,recipientNickname,messageId)
-
+            meshService.sendPingPacket(peerID,recipientNickname,messageId)
             val systemMessage = BitchatMessage(
                 sender = "system",
                 content = "Pinging $recipientNickname with 32 bytes of data",
@@ -576,14 +577,12 @@ class CommandProcessor(
             messageManager.addMessage(systemMessage)
             delay(80)
         }
-        val rttValues = state.getRttValues()
-        state.clearRtt()
-        val size = rttValues.size
-        val packetLost = (loops - size)/loops * 100
-        val meanRtt = rttValues.sum()/size
+        val metrics = NetworkMetricsManager.getPingResult(peerID)
         val systemMessage = BitchatMessage(
             sender = "system",
-            content = "Pinged $loops packets with average rtt: $meanRtt , $packetLost % packet lost",
+            content = "Pinged $loops packets with average rtt:  ${metrics?.averageRTT}, ${metrics?.packetLost?.div(
+                loops
+            )} % packet lost",
             timestamp = Date(),
             isRelay = false
         )

@@ -70,6 +70,7 @@ class SecurityManager(private val encryptionService: EncryptionService, private 
         }
         
         // NEW: Signature verification logging (not rejecting yet)
+        if (packet.type != MessageType.PING.value && packet.type != MessageType.PING.value)
         verifyPacketSignatureWithLogging(packet, peerID)
         
         Log.d(TAG, "Packet validation passed for $peerID, messageID: $messageID")

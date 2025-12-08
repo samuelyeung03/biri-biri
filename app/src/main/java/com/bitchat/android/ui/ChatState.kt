@@ -39,8 +39,6 @@ class ChatState {
     // Private chats
     private val _privateChats = MutableLiveData<Map<String, List<BitchatMessage>>>(emptyMap())
     val privateChats: LiveData<Map<String, List<BitchatMessage>>> = _privateChats
-    private val _pingPackets = MutableLiveData<Map<String, List<Pair<BitchatMessage, Long>>>>(emptyMap())
-    private val _rttValues = MutableLiveData<List<Long>>(emptyList())
     private val _selectedPrivateChatPeer = MutableLiveData<String?>(null)
     val selectedPrivateChatPeer: LiveData<String?> = _selectedPrivateChatPeer
     
@@ -156,8 +154,6 @@ class ChatState {
     fun getConnectedPeersValue() = _connectedPeers.value ?: emptyList()
     fun getNicknameValue() = _nickname.value
     fun getPrivateChatsValue() = _privateChats.value ?: emptyMap()
-    fun getPingPacketsValue() = _pingPackets.value ?: emptyMap()
-    fun getRttValues() = _rttValues.value ?: emptyList()
     fun getSelectedPrivateChatPeerValue() = _selectedPrivateChatPeer.value
     fun getUnreadPrivateMessagesValue() = _unreadPrivateMessages.value ?: emptySet()
     fun getJoinedChannelsValue() = _joinedChannels.value ?: emptySet()
@@ -213,17 +209,6 @@ class ChatState {
     
     fun setPrivateChats(chats: Map<String, List<BitchatMessage>>) {
         _privateChats.value = chats
-    }
-
-    fun setPingPackets(pings: Map<String, List<Pair<BitchatMessage, Long>>>) {
-        _pingPackets.value = pings
-    }
-    fun addRttValues(rtt : Long) {
-        val current = _rttValues.value.orEmpty()
-        _rttValues.value = current + rtt
-    }
-    fun clearRtt() {
-        _rttValues.value = emptyList()
     }
     fun setSelectedPrivateChatPeer(peerID: String?) {
         _selectedPrivateChatPeer.value = peerID

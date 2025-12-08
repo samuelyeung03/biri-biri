@@ -86,19 +86,6 @@ class BluetoothConnectionTracker(
     }
 
     /**
-     * Add a ping packet record
-     */
-    fun addPingPacket(messageId: String) {
-        pingPackets[messageId] = System.currentTimeMillis()
-    }
-    /**
-     * clear all ping packets
-     */
-    fun clearPingPackets() {
-        pingPackets.clear()
-    }
-
-    /**
      * Add a device connection
      */
     fun addDeviceConnection(deviceAddress: String, deviceConn: DeviceConnection) {

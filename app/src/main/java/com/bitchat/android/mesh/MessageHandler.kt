@@ -30,7 +30,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
     
     // Coroutines
     private val handlerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
+
     /**
      * Handle Noise encrypted transport message - SIMPLIFIED iOS-compatible version
      * Uses NoisePayloadType system exactly like iOS SimplifiedBluetoothService
@@ -157,14 +157,6 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                     // Simplified: Call delegate with messageID and peerID directly
                     delegate?.onReadReceiptReceived(messageID, peerID)
                 }
-                com.bitchat.android.model.NoisePayloadType.PING -> {
-                    val privateMessage = com.bitchat.android.model.PrivateMessagePacket.decode(noisePayload.data)
-                    if (privateMessage != null){
-                        val messageID = privateMessage.messageID
-                        debugManager?.addDebugMessage(DebugMessage.SystemMessage("📤 Sent ping ACK to $peerID for message $messageID"))
-                        sendDeliveryAck(messageID, peerID)
-                    }
-                }
             }
             
         } catch (e: Exception) {
@@ -208,7 +200,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
             Log.e(TAG, "Failed to send delivery ACK to $senderPeerID: ${e.message}")
         }
     }
-    private fun sendPong(payload: ByteArray, senderPeerID: String, timestamp: ULong){
+    private fun sendPong(messageID: ByteArray, senderPeerID: String, timestamp: ULong){
         try {
             val packet = BitchatPacket(
                 version = 1u,
@@ -216,7 +208,7 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
                 senderID = hexStringToByteArray(myPeerID),
                 recipientID = hexStringToByteArray(senderPeerID),
                 timestamp = timestamp,
-                payload = payload,
+                payload = messageID,
                 signature = null,
                 ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS // Same TTL as iOS messageTTL
             )
@@ -227,6 +219,26 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send pong to $senderPeerID: ${e.message}")
         }
+    }
+    suspend fun handlePing(routed: RoutedPacket){
+        val packet = routed.packet
+        val peerID = routed.peerID ?: return
+        Log.d(TAG, "handling ping")
+        //if (packet.recipientID.toString() == myPeerID){
+        sendPong(packet.payload,peerID,packet.timestamp)
+        //}
+    }
+    suspend fun handlePong(routed: RoutedPacket){
+        val packet = routed.packet
+        val peerID = routed.peerID ?: return
+        val rtt = NetworkMetricsManager.recordPong(peerID,String(packet.payload, Charsets.UTF_8))
+        val systemMessage = BitchatMessage(
+            sender = "system",
+            content = "Pong Received, rtt: $rtt ms",
+            timestamp = Date(),
+            isRelay = false
+        )
+        delegate?.onMessageReceived(systemMessage)
     }
     /**
      * Handle announce message with TLV decoding and signature verification - exactly like iOS
@@ -443,13 +455,6 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
      */
     private suspend fun handlePrivateMessage(packet: BitchatPacket, peerID: String) {
         try {
-            if (packet.type == MessageType.PING.value){
-                sendPong(packet.payload,peerID,packet.timestamp)
-                return
-            }
-            if (packet.type == MessageType.PONG.value){
-
-            }
             // Verify signature if present
             if (packet.signature != null && !delegate?.verifySignature(packet, peerID)!!) {
                 Log.w(TAG, "Invalid signature for private message from $peerID")
@@ -644,5 +649,4 @@ interface MessageHandlerDelegate {
     fun onChannelLeave(channel: String, fromPeer: String)
     fun onDeliveryAckReceived(messageID: String, peerID: String)
     fun onReadReceiptReceived(messageID: String, peerID: String)
-    fun onPongReceived()
 }

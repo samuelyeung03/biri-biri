@@ -369,9 +369,6 @@ class BluetoothMeshService(private val context: Context) {
                 delegate?.didReceiveReadReceipt(messageID, peerID)
             }
 
-            override fun onPongReceived(messageID: String, peerID: String) {
-                delegate?.didReceivePong(messageID, peerID)
-            }
         }
         
         // PacketProcessor delegates
@@ -404,7 +401,15 @@ class BluetoothMeshService(private val context: Context) {
             override fun handleNoiseEncrypted(routed: RoutedPacket) {
                 serviceScope.launch { messageHandler.handleNoiseEncrypted(routed) }
             }
-            
+
+            override fun handlePing(routed: RoutedPacket) {
+                serviceScope.launch { messageHandler.handlePing(routed) }
+            }
+
+            override fun handlePong(routed: RoutedPacket) {
+                serviceScope.launch { messageHandler.handlePong(routed) }
+            }
+
             override fun handleAnnounce(routed: RoutedPacket) {
                 serviceScope.launch {
                     // Process the announce
@@ -799,7 +804,7 @@ class BluetoothMeshService(private val context: Context) {
             }
         }
     }
-    fun sendPingPacket(content: String, recipientPeerID: String, recipientNickname: String, messageID: String) {
+    fun sendPingPacket(recipientPeerID: String, recipientNickname: String, messageID: String) {
         if (recipientPeerID.isEmpty()) return
         if (recipientNickname.isEmpty()) return
         if (encryptionService.hasEstablishedSession(recipientPeerID))
@@ -807,7 +812,7 @@ class BluetoothMeshService(private val context: Context) {
                 val payload = messageID.toByteArray()
                 val packet = BitchatPacket(
                     version = 1u,
-                    type = MessageType.NOISE_ENCRYPTED.value,
+                    type = MessageType.PING.value,
                     senderID = hexStringToByteArray(myPeerID),
                     recipientID = hexStringToByteArray(recipientPeerID),
                     timestamp = System.currentTimeMillis().toULong(),
@@ -815,6 +820,7 @@ class BluetoothMeshService(private val context: Context) {
                     signature = null,
                     ttl = MAX_TTL
                 )
+                NetworkMetricsManager.registerSendTimestamp(recipientPeerID,messageID)
                 connectionManager.broadcastPacket(RoutedPacket(packet))
                 Log.d(TAG, "📤 Sent ping packet to $recipientPeerID")
         } else {
@@ -1205,7 +1211,6 @@ class BluetoothMeshService(private val context: Context) {
  * Delegate interface for mesh service callbacks (maintains exact same interface)
  */
 interface BluetoothMeshDelegate {
-    fun didReceivePong(messageID: String, fromPeer: String)
     fun didReceiveMessage(message: BitchatMessage)
     fun didUpdatePeerList(peers: List<String>)
     fun didReceiveChannelLeave(channel: String, fromPeer: String)

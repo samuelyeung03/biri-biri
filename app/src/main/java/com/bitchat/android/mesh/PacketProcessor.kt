@@ -123,6 +123,7 @@ class PacketProcessor(private val myPeerID: String) {
         val packet = routed.packet
         val peerID = routed.peerID ?: "unknown"
 
+
         // Basic validation and security checks
         if (!delegate?.validatePacketSecurity(packet, peerID)!!) {
             Log.d(TAG, "Packet failed security validation from ${formatPeerForLog(peerID)}")
@@ -149,6 +150,8 @@ class PacketProcessor(private val myPeerID: String) {
             MessageType.LEAVE -> handleLeave(routed)
             MessageType.FRAGMENT -> handleFragment(routed)
             MessageType.REQUEST_SYNC -> handleRequestSync(routed)
+            MessageType.PING -> handlePing(routed)
+            MessageType.PONG -> handlePong(routed)
             else -> {
                 // Handle private packet types (address check required)
                 if (packetRelayManager.isPacketAddressedToMe(packet)) {
@@ -175,7 +178,19 @@ class PacketProcessor(private val myPeerID: String) {
             packetRelayManager.handlePacketRelay(routed)
         }
     }
-    
+
+    private suspend fun handlePing(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing Ping from ${formatPeerForLog(peerID)}")
+        delegate?.handlePing(routed)
+    }
+
+    private suspend fun handlePong(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing Pong from ${formatPeerForLog(peerID)}")
+        delegate?.handlePong(routed)
+    }
+
     /**
      * Handle Noise handshake message - SIMPLIFIED iOS-compatible version
      */
@@ -316,6 +331,8 @@ interface PacketProcessorDelegate {
     fun getBroadcastRecipient(): ByteArray
     
     // Message type handlers
+    fun handlePing(routed: RoutedPacket)
+    fun handlePong(routed: RoutedPacket)
     fun handleNoiseHandshake(routed: RoutedPacket): Boolean
     fun handleNoiseEncrypted(routed: RoutedPacket)
     fun handleAnnounce(routed: RoutedPacket)

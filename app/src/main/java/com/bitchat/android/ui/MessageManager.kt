@@ -115,24 +115,6 @@ class MessageManager(private val state: ChatState) {
         }
     }
 
-    // Ping Management
-
-    fun addPingPacket(peerID: String, message: BitchatMessage){
-        val currentPingPackets = state.getPingPacketsValue().toMutableMap()
-        if (!currentPingPackets.containsKey(peerID)) {
-            currentPingPackets[peerID] = mutableListOf()
-        }
-        val pingMessages = currentPingPackets[peerID]?.toMutableList() ?: mutableListOf()
-        val timestamp = System.currentTimeMillis()
-        pingMessages.add(message to timestamp)
-        currentPingPackets[peerID] = pingMessages
-        state.setPingPackets(currentPingPackets)
-    }
-
-    fun  clearPingPackets(){
-        state.setPingPackets(emptyMap())
-    }
-
     // Variant that does not mark unread (used when we know the message has been read already, e.g., persisted Nostr read store)
     fun addPrivateMessageNoUnread(peerID: String, message: BitchatMessage) {
         val currentPrivateChats = state.getPrivateChatsValue().toMutableMap()
