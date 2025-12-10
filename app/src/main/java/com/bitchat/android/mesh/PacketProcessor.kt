@@ -150,12 +150,12 @@ class PacketProcessor(private val myPeerID: String) {
             MessageType.LEAVE -> handleLeave(routed)
             MessageType.FRAGMENT -> handleFragment(routed)
             MessageType.REQUEST_SYNC -> handleRequestSync(routed)
-            MessageType.PING -> handlePing(routed)
-            MessageType.PONG -> handlePong(routed)
             else -> {
                 // Handle private packet types (address check required)
                 if (packetRelayManager.isPacketAddressedToMe(packet)) {
                     when (messageType) {
+                        MessageType.PING -> handlePing(routed)
+                        MessageType.PONG -> handlePong(routed)
                         MessageType.NOISE_HANDSHAKE -> handleNoiseHandshake(routed)
                         MessageType.NOISE_ENCRYPTED -> handleNoiseEncrypted(routed)
                         MessageType.FILE_TRANSFER -> handleMessage(routed)

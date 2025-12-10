@@ -1,4 +1,3 @@
-
 package com.bitchat.android.mesh
 
 import android.bluetooth.BluetoothDevice
@@ -24,6 +23,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Job
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.channels.actor
+import java.util.UUID
 
 /**
  * Handles packet broadcasting to connected devices using actor pattern for serialization
@@ -336,8 +336,7 @@ class BluetoothPacketBroadcaster(
         val connectedDevices = connectionTracker.getConnectedDevices()
 
         Log.i(TAG, "Broadcasting packet type ${packet.type} to ${subscribedDevices.size} server + ${connectedDevices.size} client connections")
-
-        val senderID = String(packet.senderID).replace("\u0000", "")        
+        val senderID = String(packet.senderID).replace("\u0000", "")
         
         // Send to server connections (devices connected to our GATT server)
         subscribedDevices.forEach { device ->
@@ -452,4 +451,5 @@ class BluetoothPacketBroadcaster(
         
         Log.d(TAG, "BluetoothPacketBroadcaster shutdown complete")
     }
-} 
+}
+

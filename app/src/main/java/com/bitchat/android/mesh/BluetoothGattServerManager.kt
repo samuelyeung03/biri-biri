@@ -161,6 +161,19 @@ class BluetoothGattServerManager(
                 }
                 if (status == BluetoothGatt.GATT_SUCCESS){
                     Log.d(TAG, "Notification sent successfully to ${device?.address}")
+
+                    // Try to calculate RTT for ping packets (best-effort)
+                    try {
+                        device?.let { d ->
+                            val peerId = connectionTracker.addressPeerMap[d.address]
+                            if (peerId != null) {
+                                val rtt = NetworkMetricsManager.recordPongByPeer(peerId)
+                                if (rtt != null) {
+                                    Log.i(TAG, "Server: RTT recorded for peer $peerId: ${rtt} ms")
+                                }
+                            }
+                        }
+                    } catch (_: Exception) { /* ignore */ }
                 } else {
                     Log.e(TAG, "Notification failed to ${device?.address}, status: $status")
                 }
