@@ -23,8 +23,9 @@ class AudioPlayer(private val sampleRate: Int = 48000, private val channels: Int
     private val bufferLock = Any()
 
     // Buffer targets in milliseconds
-    private var bufferMsTarget = 300        // warm-up target before draining
-    private var bufferMsMax = 600           // max buffer, drop oldest when exceeded
+    private val bufferMsTarget = 120        // warm-up target before draining
+    private val bufferMsMax = 240           // max buffer, drop oldest when exceeded
+    private val bufferMsMin = 60            // min buffer to avoid underrun
 
     private val timeout = 3000
     private var timeoutCounter = 0
@@ -165,9 +166,11 @@ class AudioPlayer(private val sampleRate: Int = 48000, private val channels: Int
             }
 
             // Trim buffer to max duration if necessary
-            while (jitterBuffer.isNotEmpty() && bufferDurationMsLocked() > bufferMsMax) {
-                val dropped = jitterBuffer.removeFirst()
-                Log.w(TAG, "Dropping old packet seq=${dropped.seq} to keep jitter buffer <= ${bufferMsMax}ms")
+            if (bufferDurationMsLocked() > bufferMsMax) {
+                while (bufferDurationMsLocked() > bufferMsTarget){
+                    val dropped = jitterBuffer.removeFirst()
+                    Log.w(TAG, "Dropping old packet seq=${dropped.seq} to keep jitter buffer <= ${bufferMsMax}ms")
+                }
             }
         }
     }
@@ -193,7 +196,7 @@ class AudioPlayer(private val sampleRate: Int = 48000, private val channels: Int
                     if (currentMs >= bufferMsTarget){
                         break
                     }
-                    Thread.sleep(60)
+                    Thread.sleep(10)
                 }
 
                 while (running) {
@@ -204,9 +207,11 @@ class AudioPlayer(private val sampleRate: Int = 48000, private val channels: Int
                         }
                         val remainingBufferMs = bufferDurationMsLocked()
                         Log.d(TAG,"$remainingBufferMs ms left")
-                        while (remainingBufferMs > bufferMsMax) {
-                            pkt = jitterBuffer.removeFirst()
-                            Log.d(TAG,"Removing too old packet seq=${pkt.seq}")
+                        if (remainingBufferMs < bufferMsMin) {
+                            Log.w(TAG, "Jitter buffer below minimum (${remainingBufferMs}ms < ${bufferMsMin}ms), writing silence to AudioTrack")
+                            val pcm = ShortArray((sampleRate * channels * (bufferMsMin - remainingBufferMs)) / 1000)
+                            audioTrack?.write(pcm, 0, pcm.size)
+                            Thread.sleep((bufferMsMin - remainingBufferMs).toLong())
                         }
                     }
                     if (pkt == null) {
@@ -215,7 +220,6 @@ class AudioPlayer(private val sampleRate: Int = 48000, private val channels: Int
                         Thread.sleep(60)
                         continue
                     }
-                    // capture local non-null reference to avoid redundant !! and help compiler
                     timeoutCounter = 0
                     val p = pkt
                     try {
@@ -232,6 +236,7 @@ class AudioPlayer(private val sampleRate: Int = 48000, private val channels: Int
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to write PCM to AudioTrack in playback thread: ${e.message}")
                     }
+                    Thread.sleep(60)
                 }
             } catch (_: InterruptedException) {
                 // restore interrupt status and exit
