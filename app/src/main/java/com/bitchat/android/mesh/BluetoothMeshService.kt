@@ -14,6 +14,7 @@ import com.bitchat.android.model.RequestSyncPacket
 import com.bitchat.android.sync.GossipSyncManager
 import com.bitchat.android.ui.MessageManager
 import com.bitchat.android.util.toHexString
+import com.bitchat.android.rtc.RTCConnectionManager
 import kotlinx.coroutines.*
 import java.util.*
 import kotlin.math.sign
@@ -59,6 +60,7 @@ class BluetoothMeshService(private val context: Context) {
     private val messageHandler = MessageHandler(myPeerID, context.applicationContext)
     internal val connectionManager =
         BluetoothConnectionManager(context, myPeerID, fragmentManager) // Made internal for access
+    private val rtcConnectionManager by lazy { RTCConnectionManager(context = context, meshService = this@BluetoothMeshService) }
     private val packetProcessor = PacketProcessor(myPeerID)
     private lateinit var gossipSyncManager: GossipSyncManager
 
@@ -438,6 +440,10 @@ class BluetoothMeshService(private val context: Context) {
                 delegate?.didReceiveReadReceipt(messageID, peerID)
             }
 
+            override fun onAudioFrameReceived(peerID: String, packet: BitchatPacket): Boolean {
+                rtcConnectionManager.handleIncomingAudio(packet)
+                return true
+            }
         }
 
         // PacketProcessor delegates

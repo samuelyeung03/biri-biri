@@ -40,7 +40,7 @@ class CommandProcessor(
 
     // MARK: - Command Processing
     // Active RTC managers by peerID
-    private val activeCalls = mutableMapOf<String, com.bitchat.android.rtc.RTCManager>()
+    private val activeCalls = mutableMapOf<String, com.bitchat.android.rtc.RTCConnectionManager>()
 
     fun processCommand(command: String, meshService: BluetoothMeshService, myPeerID: String, onSendMessage: (String, List<String>, String?) -> Unit, viewModel: ChatViewModel? = null): Boolean {
         if (!command.startsWith("/")) return false
@@ -440,13 +440,13 @@ class CommandProcessor(
             return
         }
 
-        // Create an RTCManager that will send BitchatPacket via meshService
-        val rtc = com.bitchat.android.rtc.RTCManager(
+        // Create an RTCConnectionManager that will send BitchatPacket via meshService
+        val rtc = com.bitchat.android.rtc.RTCConnectionManager(
             context = null,
             meshService = meshService,
             sampleRate = 48000,
             channels = 1,
-            bitrate = 6000 // lowest practical bitrate to minimize network usage
+            bitrate = 28000
         )
 
         activeCalls[peerID] = rtc

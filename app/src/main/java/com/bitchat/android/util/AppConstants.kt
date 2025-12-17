@@ -124,4 +124,16 @@ object AppConstants {
     object Services {
         const val SEEN_MESSAGE_MAX_IDS: Int = 10_000
     }
+
+    object Rtc {
+        const val DEFAULT_SAMPLE_RATE_HZ: Int = 48_000
+        const val DEFAULT_CHANNEL_COUNT: Int = 1
+        const val DEFAULT_BITRATE_BPS: Int = 36_000
+        const val MIN_BITRATE_BPS: Int = 6_000
+        const val FRAME_SAMPLES_60_MS: Int = 2_880
+        const val AUDIO_TRACK_BUFFER_MS: Int = 300
+        const val JITTER_BUFFER_TARGET_MS: Int = 120
+        const val JITTER_BUFFER_MAX_MS: Int = 240
+        const val JITTER_BUFFER_MIN_MS: Int = 60
+    }
 }

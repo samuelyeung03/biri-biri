@@ -10,8 +10,6 @@ import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
 import java.sql.Timestamp
 import java.util.*
-import com.bitchat.android.rtc.AudioPlayer
-import com.bitchat.android.rtc.OpusWrapper
 
 /**
  * Handles processing of different message types
@@ -30,8 +28,6 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
     
     // Coroutines
     private val handlerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    // Audio player for incoming audio frames
-    private val audioPlayer = AudioPlayer(sampleRate = 48000, channels = 1)
 
     /**
      * Handle Noise encrypted transport message - SIMPLIFIED iOS-compatible version
@@ -505,7 +501,11 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
              Log.d(TAG, "AUDIO not for me (for $recipientID), ignoring")
              return
          }
-         audioPlayer.enqueuePacket(packet.payload)
+
+         val handled = delegate?.onAudioFrameReceived(peerID, packet) ?: false
+         if (!handled) {
+             Log.w(TAG, "No RTC manager available for audio from $peerID")
+         }
      }
 
     /**
@@ -655,4 +655,5 @@ interface MessageHandlerDelegate {
     fun onChannelLeave(channel: String, fromPeer: String)
     fun onDeliveryAckReceived(messageID: String, peerID: String)
     fun onReadReceiptReceived(messageID: String, peerID: String)
+    fun onAudioFrameReceived(peerID: String, packet: BitchatPacket): Boolean
 }
