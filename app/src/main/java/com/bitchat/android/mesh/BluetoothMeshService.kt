@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.bitchat.android.crypto.EncryptionService
 import com.bitchat.android.model.BitchatMessage
-import com.bitchat.android.protocol.MessagePadding
 import com.bitchat.android.model.RoutedPacket
 import com.bitchat.android.model.IdentityAnnouncement
 import com.bitchat.android.protocol.BitchatPacket
@@ -12,13 +11,10 @@ import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.protocol.SpecialRecipients
 import com.bitchat.android.model.RequestSyncPacket
 import com.bitchat.android.sync.GossipSyncManager
-import com.bitchat.android.ui.MessageManager
 import com.bitchat.android.util.toHexString
 import com.bitchat.android.rtc.RTCConnectionManager
 import kotlinx.coroutines.*
 import java.util.*
-import kotlin.math.sign
-import kotlin.random.Random
 import kotlin.text.toByteArray
 
 /**
@@ -60,7 +56,7 @@ class BluetoothMeshService(private val context: Context) {
     private val messageHandler = MessageHandler(myPeerID, context.applicationContext)
     internal val connectionManager =
         BluetoothConnectionManager(context, myPeerID, fragmentManager) // Made internal for access
-    private val rtcConnectionManager by lazy { RTCConnectionManager(context = context, meshService = this@BluetoothMeshService) }
+    val rtcConnectionManager by lazy { RTCConnectionManager(context = context, meshService = this@BluetoothMeshService) }
     private val packetProcessor = PacketProcessor(myPeerID)
     private lateinit var gossipSyncManager: GossipSyncManager
 
@@ -448,6 +444,10 @@ class BluetoothMeshService(private val context: Context) {
 
         // PacketProcessor delegates
         packetProcessor.delegate = object : PacketProcessorDelegate {
+            override fun onVoiceAckReceived(routed: RoutedPacket) {
+                rtcConnectionManager.handleVoiceAck(routed.packet)
+            }
+
             override fun validatePacketSecurity(packet: BitchatPacket, peerID: String): Boolean {
                 return securityManager.validatePacket(packet, peerID)
             }
@@ -580,6 +580,48 @@ class BluetoothMeshService(private val context: Context) {
                 val fromPeer = routed.peerID ?: return
                 val req = RequestSyncPacket.decode(routed.packet.payload) ?: return
                 gossipSyncManager.handleRequestSync(fromPeer, req)
+            }
+
+            override fun handleVoiceInvite(routed: RoutedPacket) {
+                serviceScope.launch {
+                    try {
+                        val fromPeer = routed.peerID ?: return@launch
+                        val payload = routed.packet.payload
+                        val body = try { String(payload, Charsets.UTF_8) } catch (_: Exception) { "" }
+                        Log.d(TAG, "📨 Received VOICE_INVITE from $fromPeer payload=$body")
+
+                        // parse simple 'key=value' pairs separated by & or ; or whitespace
+                        val params = body.split(Regex("[;&,\\s]+")).mapNotNull {
+                            val parts = it.split("=")
+                            if (parts.size == 2) parts[0].trim() to parts[1].trim() else null
+                        }.toMap()
+
+                        val mode = params["mode"] ?: "two-way"
+
+                        if (mode == "two-way") {
+                            // Auto-answer: start sending audio back to the inviter
+                            try {
+                                Log.d(TAG, "📞 Auto-answering VOICE_INVITE from $fromPeer (mode=$mode)")
+                                rtcConnectionManager.startCall(senderId = delegate?.getNickname() ?: myPeerID, recipientId = fromPeer)
+
+                                // Notify UI with a system message
+                                val sys = BitchatMessage(
+                                    sender = "system",
+                                    content = "Auto-answered two-way call from ${peerManager.getPeerNickname(fromPeer) ?: fromPeer}",
+                                    timestamp = Date(),
+                                    isRelay = false
+                                )
+                                delegate?.didReceiveMessage(sys)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to auto-answer VOICE_INVITE from $fromPeer: ${e.message}")
+                            }
+                        } else {
+                            Log.d(TAG, "Received VOICE_INVITE from $fromPeer with mode=$mode (no auto-answer)")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "handleVoiceInvite failed: ${e.message}")
+                    }
+                }
             }
         }
 
@@ -745,15 +787,20 @@ class BluetoothMeshService(private val context: Context) {
      */
     fun sendVoice(recipientPeerID: String?, payload: ByteArray) {
         if (payload.isEmpty()) return
+        // Extract sequence number from the payload (first two bytes)
+        val seq = if (payload.size >= 2) {
+            ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        } else {
+            -1 // Indicate invalid or missing sequence number
+        }
+
+        Log.d(TAG, "🔊 sendVoice: recipient=${recipientPeerID ?: "BROADCAST"}, payloadSize=${payload.size} bytes, seq=$seq")
+
         serviceScope.launch {
             try {
-                Log.d(
-                    TAG,
-                    "📤 sendVoice: to=${recipientPeerID ?: "BROADCAST"}, size=${payload.size} bytes"
-                )
                 val packet = BitchatPacket(
                     version = 1u,
-                    type = MessageType.Voice.value,
+                    type = MessageType.VOICE.value,
                     senderID = hexStringToByteArray(myPeerID),
                     recipientID = hexStringToByteArray(recipientPeerID!!),
                     timestamp = System.currentTimeMillis().toULong(),
@@ -761,12 +808,43 @@ class BluetoothMeshService(private val context: Context) {
                     signature = null,
                     ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
                 )
+                Log.d(
+                    TAG,
+                    "📤 sendVoice: Created BitchatPacket for seq=$seq, to=${recipientPeerID ?: "BROADCAST"}, size=${payload.size} bytes, timestamp=${packet.timestamp}"
+                )
                 val signed = signPacketBeforeBroadcast(packet)
                 // Use a stable transferId based on payload for progress mapping
                 val transferId = sha256Hex(payload)
                 connectionManager.broadcastPacket(RoutedPacket(signed, transferId = transferId))
+                Log.d(TAG, "🚀 sendVoice: Broadcasted packet for seq=$seq, transferId=$transferId")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to send voice frame: ${e.message}")
+                Log.e(TAG, "❌ Failed to send voice frame for seq=$seq: ${e.message}")
+            }
+        }
+    }
+
+    fun sendVoiceAck(recipientPeerID: String, seq: Int) {
+        serviceScope.launch {
+            try {
+                val payload = ByteArray(2)
+                payload[0] = ((seq shr 8) and 0xFF).toByte()
+                payload[1] = (seq and 0xFF).toByte()
+
+                val packet = BitchatPacket(
+                    version = 1u,
+                    type = MessageType.VOICE_ACK.value,
+                    senderID = hexStringToByteArray(myPeerID),
+                    recipientID = hexStringToByteArray(recipientPeerID),
+                    timestamp = System.currentTimeMillis().toULong(),
+                    payload = payload,
+                    signature = null,
+                    ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+                )
+                val signed = signPacketBeforeBroadcast(packet)
+                connectionManager.broadcastPacket(RoutedPacket(signed))
+                Log.d(TAG, "🗣️ Sent VOICE_ACK for seq=$seq to $recipientPeerID")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to send voice ack for seq=$seq: ${e.message}")
             }
         }
     }
@@ -1414,6 +1492,32 @@ class BluetoothMeshService(private val context: Context) {
             Log.d(TAG, "✅ Cleared all encryption data")
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error clearing encryption data: ${e.message}")
+        }
+    }
+
+    /**
+     * Send a voice invite
+     */
+    fun sendVoiceInvite(recipientPeerID: String, mode: String = "two-way") {
+        serviceScope.launch {
+            try {
+                val payload = "mode=$mode".toByteArray(Charsets.UTF_8)
+                val packet = BitchatPacket(
+                    version = 1u,
+                    type = MessageType.VOICE_INVITE.value,
+                    senderID = hexStringToByteArray(myPeerID),
+                    recipientID = hexStringToByteArray(recipientPeerID),
+                    timestamp = System.currentTimeMillis().toULong(),
+                    payload = payload,
+                    signature = null,
+                    ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+                )
+                val signed = signPacketBeforeBroadcast(packet)
+                connectionManager.broadcastPacket(RoutedPacket(signed))
+                Log.d(TAG, "📞 Sent VOICE_INVITE to $recipientPeerID mode=$mode")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send VOICE_INVITE to $recipientPeerID: ${e.message}")
+            }
         }
     }
 }

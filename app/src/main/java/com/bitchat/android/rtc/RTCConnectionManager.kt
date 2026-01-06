@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import com.bitchat.android.util.AppConstants
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.protocol.BitchatPacket
+import com.bitchat.android.util.toHexString
 import kotlinx.coroutines.*
 import java.util.*
 
@@ -44,6 +45,7 @@ class RTCConnectionManager(
 ) {
     companion object {
         private const val TAG = "RTCConnectionManager"
+        private const val LATENCY_TAG = "latency"
     }
 
     private var recordingJob: Job? = null
@@ -81,7 +83,7 @@ class RTCConnectionManager(
 
     @SuppressLint("MissingPermission")
     fun startCall(senderId: String, recipientId: String?) {
-        Log.d(TAG, "startCall: senderId=$senderId recipientId=$recipientId")
+        Log.d(TAG, "📞 startCall: senderId=$senderId recipientId=$recipientId")
         if (recordingJob != null) {
             Log.d(TAG, "startCall: recording already active, ignoring")
             return
@@ -137,11 +139,16 @@ class RTCConnectionManager(
 
             try {
                 while (isActive) {
+                    val currentSeq = seqNumber and 0xFFFF
+                    Log.d(LATENCY_TAG, "🎙️ Start capture for seq=$currentSeq")
                     val ok = inputDevice.readFrame(recorder, shortBuffer)
+
                     if (!ok) {
                         Log.w(TAG, "Failed to read audio frame")
                         continue
                     }
+
+                    Log.d(LATENCY_TAG, "🎙️ Captured audio frame for seq=$currentSeq")
 
                     sendEncodedFrame(shortBuffer, recipientId)
                 }
@@ -203,14 +210,32 @@ class RTCConnectionManager(
         val seq = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
         val data = if (payload.size > 2) payload.copyOfRange(2, payload.size) else ByteArray(0)
 
+        Log.d(LATENCY_TAG, "🔊 handleIncomingAudio: seq=$seq, payloadSize=${payload.size}")
+
+        // Send VOICE_ACK
+        meshServiceRef?.sendVoiceAck(packet.senderID.toHexString(), seq)
+
+        Log.d(LATENCY_TAG, "🔍 Decoding started for seq=$seq")
         val decoded = audioDecoder.decode(data)
+
         if (decoded == null || decoded.isEmpty()) {
-            Log.w(TAG, "Decoded PCM empty for seq=$seq")
+            Log.w(TAG, "❌ Decoded PCM empty for seq=$seq")
             return
         }
 
+        Log.d(LATENCY_TAG, "✅ Decoded voice frame: seq=$seq, pcmSize=${decoded.size}")
         enqueuePcm(decoded, seq)
         startPlaybackLoopIfNeeded()
+    }
+
+    fun handleVoiceAck(packet: BitchatPacket) {
+        val payload = packet.payload
+        if (payload.size < 2) {
+            Log.w(TAG, "Received payload too short to contain seq header, dropping")
+            return
+        }
+        val seq = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        Log.d(LATENCY_TAG, "🗣️ Received VOICE_ACK for seq=$seq from ${packet.senderID.toHexString()}")
     }
 
     private fun stopReceivingAudio() {
@@ -221,22 +246,32 @@ class RTCConnectionManager(
     }
 
     private fun sendEncodedFrame(pcm: ShortArray, recipientId: String?) {
+        val seq = seqNumber and 0xFFFF
+        Log.d(LATENCY_TAG, "🎤 sendEncodedFrame: pcm size=${pcm.size} seq=$seq")
+
+        Log.d(LATENCY_TAG, "⏱️ Encoding started for seq=$seq")
         val encoded = audioEncoder?.encode(pcm)
+        Log.d(LATENCY_TAG, "⏱️ Encoding finished for seq=$seq")
+
         if (encoded == null) {
             Log.w(TAG, "Audio encoder returned null for frame size=${pcm.size}")
             return
         }
 
-        val seq = seqNumber and 0xFFFF
+        // seqNumber is 0-based for tracking, but wire format uses 2 bytes
         val payload = ByteArray(encoded.size + 2)
         payload[0] = ((seq shr 8) and 0xFF).toByte()
         payload[1] = (seq and 0xFF).toByte()
         System.arraycopy(encoded, 0, payload, 2, encoded.size)
         seqNumber = (seq + 1) and 0xFFFF
 
+        Log.d(LATENCY_TAG, "📦 Encoded voice frame: seq=$seq, size=${encoded.size}, payload=${payload.size}")
+
         try {
             meshServiceRef?.let { ms ->
+                Log.d(LATENCY_TAG, "📲 Calling meshService.sendVoice with seq=$seq")
                 ms.sendVoice(recipientId, payload)
+                Log.d(LATENCY_TAG, "📲 meshService.sendVoice returned for seq=$seq")
             } ?: run {
                 Log.w(TAG, "No BluetoothMeshService attached — call attachMeshService(meshService) before startCall")
             }
@@ -285,6 +320,8 @@ class RTCConnectionManager(
                 }
             }
 
+            Log.d(LATENCY_TAG, "📥 Enqueued packet seq=$seq, buffer size=${jitterBuffer.size}")
+
             if (bufferDurationMsLocked() > bufferMsMax) {
                 while (bufferDurationMsLocked() > bufferMsTarget && jitterBuffer.isNotEmpty()) {
                     val dropped = jitterBuffer.removeFirst()
@@ -304,6 +341,7 @@ class RTCConnectionManager(
 
     private fun startPlaybackLoopIfNeeded() {
         if (playbackJob != null) return
+        Log.d(TAG, "▶️ Starting playback loop")
         playbackJob = scope.launch {
             var warmed = false
             while (isActive) {
@@ -317,6 +355,7 @@ class RTCConnectionManager(
                         warmed = true
                         if (jitterBuffer.isNotEmpty()) {
                             packet = jitterBuffer.removeFirst()
+                            Log.d(LATENCY_TAG, "📤 Dequeued packet seq=${packet?.seq}, buffer size=${jitterBuffer.size}")
                         }
                     }
                 }
@@ -326,7 +365,9 @@ class RTCConnectionManager(
                     continue
                 }
 
-                audioOutputDevice.play(packet!!.pcm)
+                Log.d(LATENCY_TAG, "🔔 Playback started for seq=${packet!!.seq}")
+                audioOutputDevice.play(packet!!.pcm, packet!!.seq)
+                Log.d(LATENCY_TAG, "🔈 Played PCM seq=${packet!!.seq}")
 
                 synchronized(bufferLock) { bufferMs = bufferDurationMsLocked() }
                 if (bufferMs < bufferMsMin) {
@@ -334,7 +375,8 @@ class RTCConnectionManager(
                     if (deficitMs > 0) {
                         val silenceSamples = (sampleRate * channels * deficitMs) / 1000
                         if (silenceSamples > 0) {
-                            audioOutputDevice.play(ShortArray(silenceSamples))
+                            Log.d(TAG, "Playing ${deficitMs}ms of silence to compensate for buffer under-run")
+                            audioOutputDevice.play(ShortArray(silenceSamples), -1)
                         }
                         delay(deficitMs.toLong())
                     }

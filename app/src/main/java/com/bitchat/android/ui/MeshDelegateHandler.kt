@@ -45,13 +45,13 @@ class MeshDelegateHandler(
             if (message.isPrivate) {
                 // Private message
                 privateChatManager.handleIncomingPrivateMessage(message)
-                
+
                 // Reactive read receipts: Send immediately if user is currently viewing this chat
                 message.senderPeerID?.let { senderPeerID ->
                     sendReadReceiptIfFocused(senderPeerID)
                 }
-                
-                // Show notification with enhanced information - now includes senderPeerID 
+
+                // Show notification with enhanced information - now includes senderPeerID
                 message.senderPeerID?.let { senderPeerID ->
                     // Use nickname if available, fall back to sender or senderPeerID
                     val senderNickname = message.sender.takeIf { it != senderPeerID } ?: senderPeerID

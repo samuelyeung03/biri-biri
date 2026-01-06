@@ -4,7 +4,6 @@ import android.util.Log
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.model.RoutedPacket
-import com.bitchat.android.ui.MessageManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.actor
@@ -159,7 +158,9 @@ class PacketProcessor(private val myPeerID: String) {
                         MessageType.NOISE_HANDSHAKE -> handleNoiseHandshake(routed)
                         MessageType.NOISE_ENCRYPTED -> handleNoiseEncrypted(routed)
                         MessageType.FILE_TRANSFER -> handleMessage(routed)
-                        MessageType.Voice -> handleAudio(routed)
+                        MessageType.VOICE -> handleAudio(routed)
+                        MessageType.VOICE_ACK -> handleVoiceAck(routed)
+                        MessageType.VOICE_INVITE -> handleVoiceInvite(routed)
                         else -> {
                             validPacket = false
                             Log.w(TAG, "Unknown message type: ${packet.type}")
@@ -277,6 +278,22 @@ class PacketProcessor(private val myPeerID: String) {
         }
     }
 
+    private suspend fun handleVoiceInvite(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing VOICE_INVITE from ${formatPeerForLog(peerID)}")
+        try {
+            delegate?.handleVoiceInvite(routed)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to handle VOICE_INVITE from ${formatPeerForLog(peerID)}: ${e.message}")
+        }
+    }
+
+    private suspend fun handleVoiceAck(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing VOICE_ACK from ${formatPeerForLog(peerID)}")
+        delegate?.onVoiceAckReceived(routed)
+    }
+
     /**
      * Handle delivery acknowledgment
      */
@@ -352,6 +369,8 @@ interface PacketProcessorDelegate {
     fun handleLeave(routed: RoutedPacket)
     fun handleFragment(packet: BitchatPacket): BitchatPacket?
     fun handleRequestSync(routed: RoutedPacket)
+    fun handleVoiceInvite(routed: RoutedPacket)
+    fun onVoiceAckReceived(routed: RoutedPacket)
     
     // Communication
     fun sendAnnouncementToPeer(peerID: String)

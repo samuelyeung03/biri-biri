@@ -412,7 +412,7 @@ class CommandProcessor(
         if (parts.size < 2) {
             val systemMessage = BitchatMessage(
                 sender = "system",
-                content = "usage: /call <nickname>",
+                content = "usage: /call <nickname> [mono]",
                 timestamp = Date(),
                 isRelay = false
             )
@@ -433,6 +433,8 @@ class CommandProcessor(
             return
         }
 
+        val isMono = parts.size > 2 && parts[2].lowercase() == "mono"
+
         // If already in a call with this peer, inform user
         if (activeCalls.containsKey(peerID)) {
             val systemMessage = BitchatMessage(sender = "system", content = "Already in a call with $targetName", timestamp = Date(), isRelay = false)
@@ -440,20 +442,24 @@ class CommandProcessor(
             return
         }
 
-        // Create an RTCConnectionManager that will send BitchatPacket via meshService
-        val rtc = com.bitchat.android.rtc.RTCConnectionManager(
-            context = null,
-            meshService = meshService,
-            sampleRate = 48000,
-            channels = 1,
-            bitrate = 28000
-        )
-
+        // Use shared RTC manager from mesh service to start sending audio
+        val rtc = meshService.rtcConnectionManager
         activeCalls[peerID] = rtc
         rtc.startCall(senderId = state.getNicknameValue() ?: meshService.myPeerID, recipientId = peerID)
 
-        val systemMessage = BitchatMessage(sender = "system", content = "Calling $targetName...", timestamp = Date(), isRelay = false)
+        val callType = if (isMono) "one-way" else "two-way"
+        val systemMessage = BitchatMessage(sender = "system", content = "Calling $targetName ($callType)...", timestamp = Date(), isRelay = false)
         messageManager.addMessage(systemMessage)
+
+        // For two-way calls, send a VOICE_INVITE packet (new MessageType) rather than using private message text
+        if (!isMono) {
+            try {
+                meshService.sendVoiceInvite(peerID, "two-way")
+            } catch (e: Exception) {
+                val warn = BitchatMessage(sender = "system", content = "Failed to send invite to $targetName: ${e.message}", timestamp = Date(), isRelay = false)
+                messageManager.addMessage(warn)
+            }
+        }
     }
 
     private fun handleHangupCommand(parts: List<String>, meshService: BluetoothMeshService) {

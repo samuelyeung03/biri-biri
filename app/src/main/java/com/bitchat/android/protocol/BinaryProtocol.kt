@@ -13,14 +13,16 @@ enum class MessageType(val value: UByte) {
     ANNOUNCE(0x01u),
     MESSAGE(0x02u),  // All user messages (private and broadcast)
     LEAVE(0x03u),
-    Voice(0x12u), // Audio packet type (used by RTCManager)
+    VOICE(0x12u), // Audio packet type (used by RTCManager)
+    VOICE_ACK(0x13u), // ACK for voice packet
+    VOICE_INVITE(0x14u), // New: Invitation to start voice call (private invite)
     PING(0x4u),
     PONG(0x5u),
     NOISE_HANDSHAKE(0x10u),  // Noise handshake
     NOISE_ENCRYPTED(0x11u),  // Noise encrypted transport message
     FRAGMENT(0x20u), // Fragmentation for large packets
     REQUEST_SYNC(0x21u), // GCS-based sync request
-    FILE_TRANSFER(0x22u); // New: File transfer packet (BLE voice notes, etc.)
+    FILE_TRANSFER(0x22u); // New: File transfer packet (ble voice notes, etc.)
 
 
     companion object {

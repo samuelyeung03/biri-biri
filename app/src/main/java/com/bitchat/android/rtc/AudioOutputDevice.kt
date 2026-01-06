@@ -13,6 +13,7 @@ class AudioOutputDevice(
 ) {
     companion object {
         private const val TAG = "AudioOutputDevice"
+        private const val LATENCY_TAG = "latency"
     }
 
     private var audioTrack: AudioTrack? = null
@@ -53,11 +54,12 @@ class AudioOutputDevice(
         return audioTrack
     }
 
-    fun play(pcm: ShortArray) {
+    fun play(pcm: ShortArray, seq: Int) {
         val track = ensureAudioTrack() ?: return
         if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
             try { track.play() } catch (e: Exception) { Log.w(TAG, "AudioTrack play failed: ${e.message}") }
         }
+        Log.d(LATENCY_TAG, "▶️ Playing PCM for seq=$seq, size=${pcm.size}")
         val written = try {
             track.write(pcm, 0, pcm.size)
         } catch (e: Exception) {

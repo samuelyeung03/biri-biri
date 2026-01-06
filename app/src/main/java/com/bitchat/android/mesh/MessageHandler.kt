@@ -18,6 +18,7 @@ import java.util.*
 class MessageHandler(private val myPeerID: String, private val appContext: android.content.Context) {
     companion object {
         private const val TAG = "MessageHandler"
+        private const val LATENCY_TAG = "latency"
     }
     
     // Delegate for callbacks
@@ -494,6 +495,15 @@ class MessageHandler(private val myPeerID: String, private val appContext: andro
      suspend fun handleAudio(routed: RoutedPacket) {
          val packet = routed.packet
          val peerID = routed.peerID ?: "unknown"
+
+         // Extract sequence number for logging
+         val seq = if (packet.payload.size >= 2) {
+             ((packet.payload[0].toInt() and 0xFF) shl 8) or (packet.payload[1].toInt() and 0xFF)
+         } else {
+             -1
+         }
+
+         Log.d(LATENCY_TAG, "🎤 handleAudio: Received voice packet from $peerID, seq=$seq, size=${packet.payload.size}")
 
          // Only accept audio addressed to us
          val recipientID = packet.recipientID?.toHexString()
