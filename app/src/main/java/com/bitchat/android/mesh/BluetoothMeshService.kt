@@ -13,6 +13,7 @@ import com.bitchat.android.model.RequestSyncPacket
 import com.bitchat.android.sync.GossipSyncManager
 import com.bitchat.android.util.toHexString
 import com.bitchat.android.rtc.RTCConnectionManager
+import com.bitchat.android.rtc.RTCSync
 import kotlinx.coroutines.*
 import java.util.*
 import kotlin.text.toByteArray
@@ -582,44 +583,81 @@ class BluetoothMeshService(private val context: Context) {
                 gossipSyncManager.handleRequestSync(fromPeer, req)
             }
 
-            override fun handleVoiceInvite(routed: RoutedPacket) {
+            override fun handleRTCSync(routed: RoutedPacket) {
                 serviceScope.launch {
                     try {
                         val fromPeer = routed.peerID ?: return@launch
                         val payload = routed.packet.payload
-                        val body = try { String(payload, Charsets.UTF_8) } catch (_: Exception) { "" }
-                        Log.d(TAG, "📨 Received VOICE_INVITE from $fromPeer payload=$body")
 
-                        // parse simple 'key=value' pairs separated by & or ; or whitespace
-                        val params = body.split(Regex("[;&,\\s]+")).mapNotNull {
-                            val parts = it.split("=")
-                            if (parts.size == 2) parts[0].trim() to parts[1].trim() else null
-                        }.toMap()
+                        val sync = RTCSync.decode(payload)
+                        if (sync == null) {
+                            Log.w(TAG, "Received RTC_SYNC with empty/invalid payload from $fromPeer")
+                            return@launch
+                        }
 
-                        val mode = params["mode"] ?: "two-way"
+                        when (sync.syncType) {
+                            RTCSync.SyncType.INVITE -> {
+                                Log.d(TAG, "📨 Received RTC_INVITE from $fromPeer callType=${sync.callType} mode=${sync.mode}")
 
-                        if (mode == "two-way") {
-                            // Auto-answer: start sending audio back to the inviter
-                            try {
-                                Log.d(TAG, "📞 Auto-answering VOICE_INVITE from $fromPeer (mode=$mode)")
-                                rtcConnectionManager.startCall(senderId = delegate?.getNickname() ?: myPeerID, recipientId = fromPeer)
+                                if (sync.callType == RTCSync.CallType.VIDEO) {
+                                    Log.w(TAG, "RTC video invite received but video is not implemented yet; ignoring")
+                                    return@launch
+                                }
 
-                                // Notify UI with a system message
+                                if (sync.mode == RTCSync.Mode.TWO_WAY) {
+                                    // Auto-answer: start sending audio back to the inviter
+                                    try {
+                                        Log.d(TAG, "📞 Auto-answering RTC_INVITE from $fromPeer")
+                                        rtcConnectionManager.startCall(
+                                            senderId = delegate?.getNickname() ?: myPeerID,
+                                            recipientId = fromPeer
+                                        )
+
+                                        // Let the inviter know we're ready (UX/handshake)
+                                        sendRTCSync(
+                                            recipientPeerID = fromPeer,
+                                            syncType = RTCSync.SyncType.ACCEPT,
+                                            callType = sync.callType,
+                                            mode = sync.mode
+                                        )
+
+                                        val sys = BitchatMessage(
+                                            sender = "system",
+                                            content = "Auto-answered two-way call from ${peerManager.getPeerNickname(fromPeer) ?: fromPeer}",
+                                            timestamp = Date(),
+                                            isRelay = false
+                                        )
+                                        delegate?.didReceiveMessage(sys)
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Failed to auto-answer RTC_INVITE from $fromPeer: ${e.message}")
+                                    }
+                                } else {
+                                    Log.d(TAG, "Received one-way RTC_INVITE from $fromPeer (no auto-answer)")
+                                }
+                            }
+
+                            RTCSync.SyncType.ACCEPT -> {
+                                Log.d(TAG, "✅ Received RTC_ACCEPT from $fromPeer callType=${sync.callType} mode=${sync.mode}")
+                            }
+
+                            RTCSync.SyncType.HANGUP -> {
+                                Log.d(TAG, "🛑 Received RTC_HANGUP from $fromPeer")
+                                try {
+                                    rtcConnectionManager.stopCall()
+                                } catch (_: Exception) {
+                                }
+
                                 val sys = BitchatMessage(
                                     sender = "system",
-                                    content = "Auto-answered two-way call from ${peerManager.getPeerNickname(fromPeer) ?: fromPeer}",
+                                    content = "Call ended by ${peerManager.getPeerNickname(fromPeer) ?: fromPeer}",
                                     timestamp = Date(),
                                     isRelay = false
                                 )
                                 delegate?.didReceiveMessage(sys)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to auto-answer VOICE_INVITE from $fromPeer: ${e.message}")
                             }
-                        } else {
-                            Log.d(TAG, "Received VOICE_INVITE from $fromPeer with mode=$mode (no auto-answer)")
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "handleVoiceInvite failed: ${e.message}")
+                        Log.e(TAG, "handleRTCSync failed: ${e.message}")
                     }
                 }
             }
@@ -1501,22 +1539,62 @@ class BluetoothMeshService(private val context: Context) {
     fun sendVoiceInvite(recipientPeerID: String, mode: String = "two-way") {
         serviceScope.launch {
             try {
-                val payload = "mode=$mode".toByteArray(Charsets.UTF_8)
-                val packet = BitchatPacket(
-                    version = 1u,
-                    type = MessageType.VOICE_INVITE.value,
-                    senderID = hexStringToByteArray(myPeerID),
-                    recipientID = hexStringToByteArray(recipientPeerID),
-                    timestamp = System.currentTimeMillis().toULong(),
-                    payload = payload,
-                    signature = null,
-                    ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+                val rtcMode = if (mode.lowercase() == "one-way" || mode.lowercase() == "oneway" || mode.lowercase() == "mono") {
+                    RTCSync.Mode.ONE_WAY
+                } else {
+                    RTCSync.Mode.TWO_WAY
+                }
+
+                sendRTCSync(
+                    recipientPeerID = recipientPeerID,
+                    syncType = RTCSync.SyncType.INVITE,
+                    callType = RTCSync.CallType.VOICE,
+                    mode = rtcMode
                 )
-                val signed = signPacketBeforeBroadcast(packet)
-                connectionManager.broadcastPacket(RoutedPacket(signed))
-                Log.d(TAG, "📞 Sent VOICE_INVITE to $recipientPeerID mode=$mode")
+
+                Log.d(TAG, "📞 Sent RTC_INVITE to $recipientPeerID mode=$rtcMode")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to send VOICE_INVITE to $recipientPeerID: ${e.message}")
+                Log.e(TAG, "Failed to send RTC_INVITE to $recipientPeerID: ${e.message}")
+            }
+        }
+    }
+
+    private fun sendRTCSync(
+        recipientPeerID: String,
+        syncType: RTCSync.SyncType,
+        callType: RTCSync.CallType,
+        mode: RTCSync.Mode
+    ) {
+        val payload = RTCSync(syncType = syncType, callType = callType, mode = mode).encode()
+        val packet = BitchatPacket(
+            version = 1u,
+            type = MessageType.RTC_SYNC.value,
+            senderID = hexStringToByteArray(myPeerID),
+            recipientID = hexStringToByteArray(recipientPeerID),
+            timestamp = System.currentTimeMillis().toULong(),
+            payload = payload,
+            signature = null,
+            ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+        )
+        val signed = signPacketBeforeBroadcast(packet)
+        connectionManager.broadcastPacket(RoutedPacket(signed))
+    }
+
+    fun sendHangup(recipientPeerID: String) {
+        serviceScope.launch {
+            try {
+                try { rtcConnectionManager.stopCall() } catch (_: Exception) {}
+
+                sendRTCSync(
+                    recipientPeerID = recipientPeerID,
+                    syncType = RTCSync.SyncType.HANGUP,
+                    callType = RTCSync.CallType.VOICE,
+                    mode = RTCSync.Mode.TWO_WAY
+                )
+
+                Log.d(TAG, "🛑 Sent RTC_HANGUP to $recipientPeerID")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send RTC_HANGUP to $recipientPeerID: ${e.message}")
             }
         }
     }

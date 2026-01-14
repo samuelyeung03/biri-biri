@@ -15,7 +15,7 @@ enum class MessageType(val value: UByte) {
     LEAVE(0x03u),
     VOICE(0x12u), // Audio packet type (used by RTCManager)
     VOICE_ACK(0x13u), // ACK for voice packet
-    VOICE_INVITE(0x14u), // New: Invitation to start voice call (private invite)
+    RTC_SYNC(0x14u), // New: Invitation to start call (private invite)
     PING(0x4u),
     PONG(0x5u),
     NOISE_HANDSHAKE(0x10u),  // Noise handshake

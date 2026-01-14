@@ -160,7 +160,7 @@ class PacketProcessor(private val myPeerID: String) {
                         MessageType.FILE_TRANSFER -> handleMessage(routed)
                         MessageType.VOICE -> handleAudio(routed)
                         MessageType.VOICE_ACK -> handleVoiceAck(routed)
-                        MessageType.VOICE_INVITE -> handleVoiceInvite(routed)
+                        MessageType.RTC_SYNC -> handleRTCSync(routed)
                         else -> {
                             validPacket = false
                             Log.w(TAG, "Unknown message type: ${packet.type}")
@@ -278,11 +278,11 @@ class PacketProcessor(private val myPeerID: String) {
         }
     }
 
-    private suspend fun handleVoiceInvite(routed: RoutedPacket) {
+    private suspend fun handleRTCSync(routed: RoutedPacket) {
         val peerID = routed.peerID ?: "unknown"
         Log.d(TAG, "Processing VOICE_INVITE from ${formatPeerForLog(peerID)}")
         try {
-            delegate?.handleVoiceInvite(routed)
+            delegate?.handleRTCSync(routed)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to handle VOICE_INVITE from ${formatPeerForLog(peerID)}: ${e.message}")
         }
@@ -369,7 +369,7 @@ interface PacketProcessorDelegate {
     fun handleLeave(routed: RoutedPacket)
     fun handleFragment(packet: BitchatPacket): BitchatPacket?
     fun handleRequestSync(routed: RoutedPacket)
-    fun handleVoiceInvite(routed: RoutedPacket)
+    fun handleRTCSync(routed: RoutedPacket)
     fun onVoiceAckReceived(routed: RoutedPacket)
     
     // Communication

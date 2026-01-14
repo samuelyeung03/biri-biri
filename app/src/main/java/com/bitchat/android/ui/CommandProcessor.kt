@@ -467,6 +467,10 @@ class CommandProcessor(
         if (targetPeerID != null) {
             val rtc = activeCalls.remove(targetPeerID)
             rtc?.stopCall()
+            try {
+                meshService.sendHangup(targetPeerID)
+            } catch (_: Exception) {
+            }
             val systemMessage = BitchatMessage(sender = "system", content = "Call with ${getPeerNickname(targetPeerID, meshService)} ended.", timestamp = Date(), isRelay = false)
             messageManager.addMessage(systemMessage)
         } else {
