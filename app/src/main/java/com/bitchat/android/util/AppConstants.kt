@@ -125,7 +125,7 @@ object AppConstants {
         const val SEEN_MESSAGE_MAX_IDS: Int = 10_000
     }
 
-    object Rtc {
+    object VoiceCall {
         const val DEFAULT_SAMPLE_RATE_HZ: Int = 48_000
         const val DEFAULT_CHANNEL_COUNT: Int = 1
         const val DEFAULT_BITRATE_BPS: Int = 36_000
@@ -135,5 +135,12 @@ object AppConstants {
         const val JITTER_BUFFER_TARGET_MS: Int = 120
         const val JITTER_BUFFER_MAX_MS: Int = 240
         const val JITTER_BUFFER_MIN_MS: Int = 60
+    }
+    object VideoCall {
+        const val DEFAULT_CODEC: String = "video/hevc"
+        const val DEFAULT_WIDTH: Int = 640
+        const val DEFAULT_HEIGHT: Int = 480
+        const val DEFAULT_FRAME_RATE: Int = 15
+        const val DEFAULT_BITRATE_BPS: Int = 500_000 // 500kbps
     }
 }

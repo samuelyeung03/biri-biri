@@ -8,9 +8,9 @@ import com.bitchat.android.util.AppConstants
 
 /** Captures PCM16 audio frames from the mic. */
 class AudioInputDevice(
-    private val sampleRate: Int = AppConstants.Rtc.DEFAULT_SAMPLE_RATE_HZ,
-    private val channels: Int = AppConstants.Rtc.DEFAULT_CHANNEL_COUNT,
-    private val frameSamples: Int = AppConstants.Rtc.FRAME_SAMPLES_60_MS
+    private val sampleRate: Int = AppConstants.VoiceCall.DEFAULT_SAMPLE_RATE_HZ,
+    private val channels: Int = AppConstants.VoiceCall.DEFAULT_CHANNEL_COUNT,
+    private val frameSamples: Int = AppConstants.VoiceCall.FRAME_SAMPLES_60_MS
 ) {
     companion object {
         private const val TAG = "AudioInputDevice"

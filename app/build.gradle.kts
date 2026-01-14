@@ -99,6 +99,9 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
     
+    // CameraX
+    implementation(libs.bundles.camerax)
+
     // Bluetooth
     implementation(libs.nordic.ble)
 

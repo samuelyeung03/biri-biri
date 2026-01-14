@@ -8,8 +8,8 @@ import com.bitchat.android.util.AppConstants
 import kotlin.math.max
 
 class AudioOutputDevice(
-    private val sampleRate: Int = AppConstants.Rtc.DEFAULT_SAMPLE_RATE_HZ,
-    private val channels: Int = AppConstants.Rtc.DEFAULT_CHANNEL_COUNT
+    private val sampleRate: Int = AppConstants.VoiceCall.DEFAULT_SAMPLE_RATE_HZ,
+    private val channels: Int = AppConstants.VoiceCall.DEFAULT_CHANNEL_COUNT
 ) {
     companion object {
         private const val TAG = "AudioOutputDevice"
@@ -22,7 +22,7 @@ class AudioOutputDevice(
         if (audioTrack != null) return audioTrack
         val channelConfig = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
-        val bufferMs = AppConstants.Rtc.AUDIO_TRACK_BUFFER_MS
+        val bufferMs = AppConstants.VoiceCall.AUDIO_TRACK_BUFFER_MS
         val bytesForBuffer = (sampleRate * bufferMs * channels * 2) / 1000
         val bufferSize = max(minBuf, bytesForBuffer)
 

@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.app.AppOpsManager
 import android.content.Context
 import android.content.pm.PackageManager
-import android.media.AudioFormat
 import android.media.AudioRecord
 import android.os.Build
 import android.os.Process
@@ -34,10 +33,10 @@ import java.util.*
  */
 class RTCConnectionManager(
     private val context: Context? = null,
-    private val sampleRate: Int = AppConstants.Rtc.DEFAULT_SAMPLE_RATE_HZ,
-    private val channels: Int = AppConstants.Rtc.DEFAULT_CHANNEL_COUNT,
-    private val bitrate: Int = AppConstants.Rtc.DEFAULT_BITRATE_BPS,
-    private val frameSamples: Int = AppConstants.Rtc.FRAME_SAMPLES_60_MS,
+    private val sampleRate: Int = AppConstants.VoiceCall.DEFAULT_SAMPLE_RATE_HZ,
+    private val channels: Int = AppConstants.VoiceCall.DEFAULT_CHANNEL_COUNT,
+    private val bitrate: Int = AppConstants.VoiceCall.DEFAULT_BITRATE_BPS,
+    private val frameSamples: Int = AppConstants.VoiceCall.FRAME_SAMPLES_60_MS,
     private val encoderFactory: () -> AudioEncoder = { OpusEncoder(sampleRate, channels, bitrate) },
     private val inputDeviceFactory: () -> AudioInputDevice = { AudioInputDevice(sampleRate, channels, frameSamples) },
     private val audioOutputDevice: AudioOutputDevice = AudioOutputDevice(sampleRate, channels),
@@ -57,9 +56,9 @@ class RTCConnectionManager(
     private var seqNumber: Int = 0
     private val jitterBuffer = ArrayDeque<Packet>()
     private val bufferLock = Any()
-    private val bufferMsTarget = AppConstants.Rtc.JITTER_BUFFER_TARGET_MS
-    private val bufferMsMax = AppConstants.Rtc.JITTER_BUFFER_MAX_MS
-    private val bufferMsMin = AppConstants.Rtc.JITTER_BUFFER_MIN_MS
+    private val bufferMsTarget = AppConstants.VoiceCall.JITTER_BUFFER_TARGET_MS
+    private val bufferMsMax = AppConstants.VoiceCall.JITTER_BUFFER_MAX_MS
+    private val bufferMsMin = AppConstants.VoiceCall.JITTER_BUFFER_MIN_MS
 
     private data class Packet(val pcm: ShortArray, val seq: Int)
 
@@ -70,9 +69,9 @@ class RTCConnectionManager(
     constructor(
         context: Context? = null,
         meshService: BluetoothMeshService,
-        sampleRate: Int = AppConstants.Rtc.DEFAULT_SAMPLE_RATE_HZ,
-        channels: Int = AppConstants.Rtc.DEFAULT_CHANNEL_COUNT,
-        bitrate: Int = AppConstants.Rtc.MIN_BITRATE_BPS
+        sampleRate: Int = AppConstants.VoiceCall.DEFAULT_SAMPLE_RATE_HZ,
+        channels: Int = AppConstants.VoiceCall.DEFAULT_CHANNEL_COUNT,
+        bitrate: Int = AppConstants.VoiceCall.MIN_BITRATE_BPS
     ) : this(context, sampleRate, channels, bitrate) {
         this.meshServiceRef = meshService
     }

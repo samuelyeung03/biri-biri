@@ -12,6 +12,9 @@ lifecycle-runtime = "2.9.1"
 activity-compose = "1.10.1"
 appcompat = "1.7.1"
 
+# CameraX
+camerax = "1.4.1"
+
 # Compose
 compose-bom = "2025.06.01"
 
@@ -60,6 +63,13 @@ androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx
 androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle-runtime" }
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
 androidx-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
+
+# CameraX
+androidx-camera-core = { module = "androidx.camera:camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+androidx-camera-extensions = { module = "androidx.camera:camera-extensions", version.ref = "camerax" }
 
 # Compose
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
@@ -145,6 +155,14 @@ cryptography = [
     "google-tink-android"
 ]
 
+camerax = [
+    "androidx-camera-core",
+    "androidx-camera-camera2",
+    "androidx-camera-lifecycle",
+    "androidx-camera-view",
+    "androidx-camera-extensions"
+]
+
 testing = [
     "junit",
     "androidx-test-ext-junit",
@@ -158,4 +176,5 @@ testing = [
 compose-testing = [
     "androidx-compose-ui-test-junit4",
     "androidx-compose-ui-test-manifest"
-] 
+]
+
