@@ -59,7 +59,13 @@ class VideoStream(
     ) {
         cameraRecipientId = recipientId
 
-        val cam = camera ?: Camera(context = context, width = width, height = height).also { camera = it }
+        val cam = camera ?: Camera(
+            context = context,
+            width = width,
+            height = height,
+            targetFps = AppConstants.VideoCall.DEFAULT_FRAME_RATE
+        ).also { camera = it }
+
         cam.startCamera(lifecycleOwner) { imageProxy ->
             try {
                 sendFrame(imageProxy, cameraRecipientId)
@@ -163,8 +169,8 @@ class VideoStream(
             return
         }
 
-        // Send VIDEO_ACK
-        meshService?.sendVideoAck(packet.senderID.toHexString(), seq)
+        // Send VIDEO_ACK disbaled for now
+        // meshService?.sendVideoAck(packet.senderID.toHexString(), seq)
 
         // seq=0 is reserved for codec config (VPS/SPS/PPS or SPS/PPS)
         if (seq == 0 && decoder is MediaCodecVideoDecoder) {

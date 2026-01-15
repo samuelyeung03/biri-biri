@@ -20,11 +20,14 @@ import java.util.concurrent.Executors
 class Camera(
     private val context: Context,
     private val width: Int = AppConstants.VideoCall.DEFAULT_WIDTH,
-    private val height: Int = AppConstants.VideoCall.DEFAULT_HEIGHT
+    private val height: Int = AppConstants.VideoCall.DEFAULT_HEIGHT,
+    private val targetFps: Int = AppConstants.VideoCall.DEFAULT_FRAME_RATE
 ) {
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageAnalysis: ImageAnalysis? = null
     private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+    private var lastDeliveredTsNs: Long = 0L
 
     fun startCamera(
         lifecycleOwner: LifecycleOwner,
@@ -52,6 +55,17 @@ class Camera(
                 .build()
 
             imageAnalysis?.setAnalyzer(cameraExecutor) { imageProxy ->
+                // Enforce target FPS at the source. Always close frames we skip.
+                val minIntervalNs = if (targetFps <= 0) 0L else 1_000_000_000L / targetFps
+                val tsNs = imageProxy.imageInfo.timestamp
+                val shouldDeliver = (minIntervalNs == 0L) || (lastDeliveredTsNs == 0L) || ((tsNs - lastDeliveredTsNs) >= minIntervalNs)
+
+                if (!shouldDeliver) {
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+
+                lastDeliveredTsNs = tsNs
                 onFrame(imageProxy)
             }
 
@@ -73,6 +87,7 @@ class Camera(
 
     fun stopCamera() {
         cameraProvider?.unbindAll()
+        lastDeliveredTsNs = 0L
         cameraExecutor.shutdown()
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
@@ -81,4 +96,3 @@ class Camera(
         private const val TAG = "Camera"
     }
 }
-
