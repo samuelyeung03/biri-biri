@@ -18,7 +18,8 @@ class CommandProcessor(
     private val state: ChatState,
     private val messageManager: MessageManager,
     private val channelManager: ChannelManager,
-    private val privateChatManager: PrivateChatManager
+    private val privateChatManager: PrivateChatManager,
+    private val onVideoCallRequested: ((peerId: String) -> Unit)? = null
 ) {
     //user for ping
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -532,8 +533,11 @@ class CommandProcessor(
         )
         messageManager.addMessage(systemMessage)
 
-        // Delegate all call-control logic to RTCConnectionManager
-        rtc.startOutgoingVideoCall(peerID)
+        // Notify UI to navigate to the video call screen.
+        onVideoCallRequested?.invoke(peerID)
+
+        // Start call-control (invite). Camera start will be handled by UI later when it passes a LifecycleOwner.
+        rtc.startOutgoingVideoCall(peerID, lifecycleOwner = null)
     }
 
     private fun handleUnknownCommand(cmd: String) {

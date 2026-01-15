@@ -46,17 +46,6 @@ class RTCConnectionManager(
 
     private var meshServiceRef: BluetoothMeshService? = null
 
-    private var lifecycleOwnerRef: LifecycleOwner? = null
-
-    /**
-     * Set a LifecycleOwner for camera-based video calls.
-     *
-     * We avoid any UI wiring here; the app can pass the current lifecycle owner (e.g. activity).
-     */
-    fun setLifecycleOwnerForVideo(lifecycleOwner: LifecycleOwner?) {
-        lifecycleOwnerRef = lifecycleOwner
-    }
-
     private val voiceStream: VoiceStream = VoiceStream(
         context = context,
         sampleRate = sampleRate,
@@ -110,7 +99,6 @@ class RTCConnectionManager(
                 onCallControlEvent?.invoke(CallControlEvent.Invite(fromPeerId, sync.callType, sync.mode))
 
                 if (sync.mode == RTCSync.Mode.TWO_WAY) {
-                    // Auto-answer behavior matches previous implementation.
                     when (sync.callType) {
                         RTCSync.CallType.VOICE -> {
                             startCall(senderId = meshServiceRef?.myPeerID ?: "", recipientId = fromPeerId)
@@ -122,16 +110,22 @@ class RTCConnectionManager(
                                 mode = sync.mode
                             )
                         }
-                        RTCSync.CallType.VIDEO -> {
-                            val ctx = context
-                            val lc = lifecycleOwnerRef
-                            if (ctx == null || lc == null) {
-                                Log.w(TAG, "Cannot auto-answer video invite: missing context or lifecycleOwner")
-                                return
-                            }
 
-                            // Start camera capture+send. Rendering is not wired; decoding uses callback if set.
-                            startVideo(lifecycleOwner = lc, recipientId = fromPeerId, onDecodedFrame = null)
+                        RTCSync.CallType.VIDEO -> {
+                            // We still ACK/ACCEPT the invite so the remote caller can proceed with their send pipeline,
+                            // but we don't start CameraX capture here because CameraX requires a LifecycleOwner and
+                            // RTCConnectionManager is intentionally UI-agnostic.
+                            //
+                            // The intended flow is:
+                            // 1) We emit CallControlEvent.Invite(fromPeerId, VIDEO, mode)
+                            // 2) The UI / higher-level coordinator decides whether to accept and, if so, calls:
+                            //      startVideo(lifecycleOwner, recipientId = fromPeerId)
+                            //    (and later wires rendering)
+                            // 3) Regardless, we send RTC_ACCEPT here to keep the handshake consistent.
+                            Log.w(
+                                TAG,
+                                "Received VIDEO invite from $fromPeerId; camera start deferred until a LifecycleOwner is provided"
+                            )
 
                             meshServiceRef?.sendRTCSync(
                                 recipientPeerID = fromPeerId,
@@ -231,13 +225,9 @@ class RTCConnectionManager(
     /**
      * Start an outgoing video call to [peerId].
      *
-     * This method owns the call-control logic:
-     * - sends RTC_SYNC INVITE (VIDEO, TWO_WAY)
-     * - starts local camera capture if a LifecycleOwner was provided via [setLifecycleOwnerForVideo]
-     *
-     * Rendering is intentionally not wired here.
+     * Option B: pass the [lifecycleOwner] explicitly rather than storing it.
      */
-    fun startOutgoingVideoCall(peerId: String) {
+    fun startOutgoingVideoCall(peerId: String, lifecycleOwner: LifecycleOwner? = null) {
         val ms = meshServiceRef
         if (ms == null) {
             Log.w(TAG, "startOutgoingVideoCall: no mesh service attached")
@@ -257,11 +247,10 @@ class RTCConnectionManager(
         }
 
         // Start local capture if possible
-        val lc = lifecycleOwnerRef
-        if (lc != null) {
-            startVideo(lifecycleOwner = lc, recipientId = peerId, onDecodedFrame = null)
+        if (lifecycleOwner != null) {
+            startVideo(lifecycleOwner = lifecycleOwner, recipientId = peerId, onDecodedFrame = null)
         } else {
-            Log.d(TAG, "startOutgoingVideoCall: lifecycleOwner not set; camera start deferred")
+            Log.d(TAG, "startOutgoingVideoCall: lifecycleOwner not provided; camera start deferred")
         }
     }
 }

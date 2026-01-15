@@ -38,10 +38,12 @@ import com.bitchat.android.onboarding.PermissionManager
 import com.bitchat.android.ui.ChatScreen
 import com.bitchat.android.ui.ChatViewModel
 import com.bitchat.android.ui.OrientationAwareActivity
+import com.bitchat.android.ui.VideoCallScreen
 import com.bitchat.android.ui.theme.BitchatTheme
 import com.bitchat.android.nostr.PoWPreferenceManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.livedata.observeAsState
 
 class MainActivity : OrientationAwareActivity() {
 
@@ -140,6 +142,9 @@ class MainActivity : OrientationAwareActivity() {
         val isLocationLoading by mainViewModel.isLocationLoading.collectAsState()
         val isBatteryOptimizationLoading by mainViewModel.isBatteryOptimizationLoading.collectAsState()
 
+        // Observe video call navigation requests
+        val videoCallPeerId by chatViewModel.videoCallPeerId.observeAsState(null)
+
         DisposableEffect(context, bluetoothStatusManager) {
 
             val receiver = bluetoothStatusManager.monitorBluetoothState(
@@ -228,24 +233,66 @@ class MainActivity : OrientationAwareActivity() {
             }
 
             OnboardingState.CHECKING, OnboardingState.INITIALIZING, OnboardingState.COMPLETE -> {
-                // Set up back navigation handling for the chat screen
-                val backCallback = object : OnBackPressedCallback(true) {
-                    override fun handleOnBackPressed() {
-                        // Let ChatViewModel handle navigation state
-                        val handled = chatViewModel.handleBackPressed()
-                        if (!handled) {
-                            // If ChatViewModel doesn't handle it, disable this callback
-                            // and let the system handle it (which will exit the app)
-                            this.isEnabled = false
-                            onBackPressedDispatcher.onBackPressed()
-                            this.isEnabled = true
+                val peerId: String? = videoCallPeerId
+
+                // If a video call is active/requested, show the full-screen call UI.
+                if (peerId != null) {
+                    // Start local camera capture automatically when entering the video call screen.
+                    // We use the Activity as the LifecycleOwner (CameraX requirement).
+                    LaunchedEffect(peerId) {
+                        try {
+                            meshService.rtcConnectionManager.startVideo(
+                                lifecycleOwner = this@MainActivity,
+                                recipientId = peerId,
+                                onDecodedFrame = null
+                            )
+                        } catch (_: Exception) {
                         }
                     }
-                }
 
-                // Add the callback - this will be automatically removed when the activity is destroyed
-                onBackPressedDispatcher.addCallback(this, backCallback)
-                ChatScreen(viewModel = chatViewModel)
+                    VideoCallScreen(
+                        modifier = modifier,
+                        onHangUp = {
+                            try {
+                                // Stop local streams.
+                                meshService.rtcConnectionManager.stopVideo()
+                            } catch (_: Exception) {
+                            }
+
+                            // Send remote hangup signal for video call.
+                            try {
+                                meshService.sendRTCSync(
+                                    recipientPeerID = peerId,
+                                    syncType = com.bitchat.android.rtc.RTCSync.SyncType.HANGUP,
+                                    callType = com.bitchat.android.rtc.RTCSync.CallType.VIDEO,
+                                    mode = com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY
+                                )
+                            } catch (_: Exception) {
+                            }
+
+                            chatViewModel.clearVideoCallPeerId()
+                        }
+                    )
+                } else {
+                    // Set up back navigation handling for the chat screen
+                    val backCallback = object : OnBackPressedCallback(true) {
+                        override fun handleOnBackPressed() {
+                            // Let ChatViewModel handle navigation state
+                            val handled = chatViewModel.handleBackPressed()
+                            if (!handled) {
+                                // If ChatViewModel doesn't handle it, disable this callback
+                                // and let the system handle it (which will exit the app)
+                                this.isEnabled = false
+                                onBackPressedDispatcher.onBackPressed()
+                                this.isEnabled = true
+                            }
+                        }
+                    }
+
+                    // Add the callback - this will be automatically removed when the activity is destroyed
+                    onBackPressedDispatcher.addCallback(this, backCallback)
+                    ChatScreen(viewModel = chatViewModel)
+                }
             }
             
             OnboardingState.ERROR -> {

@@ -67,7 +67,26 @@ class ChatViewModel(
     }
 
     val privateChatManager = PrivateChatManager(state, messageManager, dataManager, noiseSessionDelegate)
-    private val commandProcessor = CommandProcessor(state, messageManager, channelManager, privateChatManager)
+
+    // Simple UI navigation event for video calls (peerId)
+    private val _videoCallPeerId = androidx.lifecycle.MutableLiveData<String?>(null)
+    val videoCallPeerId: androidx.lifecycle.LiveData<String?> = _videoCallPeerId
+
+    fun clearVideoCallPeerId() {
+        _videoCallPeerId.value = null
+    }
+
+    // Replace CommandProcessor creation to inject video call callback
+    private val commandProcessor = CommandProcessor(
+        state,
+        messageManager,
+        channelManager,
+        privateChatManager,
+        onVideoCallRequested = { peerId ->
+            _videoCallPeerId.postValue(peerId)
+        }
+    )
+
     private val notificationManager = NotificationManager(
       application.applicationContext,
       NotificationManagerCompat.from(application.applicationContext),
