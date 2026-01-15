@@ -237,14 +237,14 @@ class MainActivity : OrientationAwareActivity() {
 
                 // If a video call is active/requested, show the full-screen call UI.
                 if (peerId != null) {
-                    // Start local camera capture automatically when entering the video call screen.
-                    // We use the Activity as the LifecycleOwner (CameraX requirement).
+                    // Start outgoing video call pipeline when entering the call screen:
+                    // - sends RTC_INVITE(VIDEO)
+                    // - starts local camera capture using the Activity as LifecycleOwner
                     LaunchedEffect(peerId) {
                         try {
-                            meshService.rtcConnectionManager.startVideo(
-                                lifecycleOwner = this@MainActivity,
-                                recipientId = peerId,
-                                onDecodedFrame = null
+                            meshService.rtcConnectionManager.startOutgoingVideoCall(
+                                peerId = peerId,
+                                lifecycleOwner = this@MainActivity
                             )
                         } catch (_: Exception) {
                         }
@@ -271,6 +271,18 @@ class MainActivity : OrientationAwareActivity() {
                             }
 
                             chatViewModel.clearVideoCallPeerId()
+                        },
+                        onRemoteSurfaceAvailable = { surface ->
+                            try {
+                                meshService.rtcConnectionManager.setRemoteVideoSurface(surface)
+                            } catch (_: Exception) {
+                            }
+                        },
+                        onRemoteSurfaceDestroyed = {
+                            try {
+                                meshService.rtcConnectionManager.clearRemoteVideoSurface()
+                            } catch (_: Exception) {
+                            }
                         }
                     )
                 } else {

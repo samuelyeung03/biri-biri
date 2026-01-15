@@ -70,7 +70,11 @@ class ChatViewModel(
 
     // Simple UI navigation event for video calls (peerId)
     private val _videoCallPeerId = androidx.lifecycle.MutableLiveData<String?>(null)
-    val videoCallPeerId: androidx.lifecycle.LiveData<String?> = _videoCallPeerId
+    val videoCallPeerId: LiveData<String?> = _videoCallPeerId
+
+    internal fun setVideoCallPeerId(peerId: String?) {
+        _videoCallPeerId.postValue(peerId)
+    }
 
     fun clearVideoCallPeerId() {
         _videoCallPeerId.value = null
@@ -169,6 +173,32 @@ class ChatViewModel(
         }
         debugManager?.addDebugMessage(DebugMessage.SystemMessage("ChatViewModel init, Hello World"))
         // Removed background location notes subscription. Notes now load only when sheet opens.
+
+        // Wire RTC call-control events to UI navigation state.
+        try {
+            meshService.rtcConnectionManager.onCallControlEvent = { evt ->
+                when (evt) {
+                    is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Invite -> {
+                        if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
+                            // Auto-open call UI for incoming video invite.
+                            setVideoCallPeerId(evt.fromPeerId)
+                        }
+                    }
+
+                    is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Hangup -> {
+                        if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
+                            // Close call UI when remote hangs up.
+                            clearVideoCallPeerId()
+                        }
+                    }
+
+                    else -> {
+                        // no-op
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
     }
 
     fun cancelMediaSend(messageId: String) {
@@ -321,7 +351,7 @@ class ChatViewModel(
         val success = privateChatManager.startPrivateChat(peerID, meshService)
         if (success) {
             // Notify notification manager about current private chat
-            setCurrentPrivateChatPeer(peerID)
+            setCurrentPrivateChat(peerID)
             // Clear notifications for this sender since user is now viewing the chat
             clearNotificationsForSender(peerID)
 
@@ -341,7 +371,7 @@ class ChatViewModel(
     fun endPrivateChat() {
         privateChatManager.endPrivateChat()
         // Notify notification manager that no private chat is active
-        setCurrentPrivateChatPeer(null)
+        setCurrentPrivateChat(null)
         // Clear mesh mention notifications since user is now back in mesh chat
         clearMeshMentionNotifications()
     }
@@ -659,7 +689,7 @@ class ChatViewModel(
         notificationManager.setAppBackgroundState(inBackground)
     }
     
-    fun setCurrentPrivateChatPeer(peerID: String?) {
+    fun setCurrentPrivateChat(peerID: String?) {
         // Update notification manager with current private chat peer
         notificationManager.setCurrentPrivateChatPeer(peerID)
     }

@@ -214,12 +214,53 @@ class RTCConnectionManager(
         voiceStream.handleVoiceAck(packet)
     }
 
-    fun handleIncomingVideo(packet: BitchatPacket) {
-        videoStream.handleIncomingVideo(packet)
-    }
-
     fun handleVideoAck(packet: BitchatPacket) {
         videoStream.handleVideoAck(packet)
+    }
+
+    fun handleIncomingVideo(packet: BitchatPacket) {
+        // Preserve existing behavior for non-rendering path
+        videoStream.handleIncomingVideo(packet)
+
+        // Also feed the surface renderer if present.
+        val payload = packet.payload
+        if (payload.size < 2) return
+        val seq = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        val data = if (payload.size > 2) payload.copyOfRange(2, payload.size) else ByteArray(0)
+        if (data.isEmpty()) return
+
+        val surfaceDecoder = remoteSurfaceDecoder ?: return
+        if (seq == 0) {
+            surfaceDecoder.setCodecConfig(data)
+            return
+        }
+
+        surfaceDecoder.decode(data, presentationTimeUs = packet.timestamp.toLong() * 1000L)
+    }
+
+    // Remote rendering
+    private var remoteSurfaceDecoder: SurfaceVideoDecoder? = null
+    private var remoteSurface: android.view.Surface? = null
+
+    fun setRemoteVideoSurface(surface: android.view.Surface) {
+        remoteSurface = surface
+        // Recreate decoder to bind to this Surface.
+        try {
+            remoteSurfaceDecoder?.release()
+        } catch (_: Exception) {
+        }
+        remoteSurfaceDecoder = SurfaceVideoDecoder(surface = surface)
+        Log.d(TAG, "🎬 Remote video surface set; SurfaceVideoDecoder created")
+    }
+
+    fun clearRemoteVideoSurface() {
+        remoteSurface = null
+        try {
+            remoteSurfaceDecoder?.release()
+        } catch (_: Exception) {
+        }
+        remoteSurfaceDecoder = null
+        Log.d(TAG, "🎬 Remote video surface cleared; SurfaceVideoDecoder released")
     }
 
     /**

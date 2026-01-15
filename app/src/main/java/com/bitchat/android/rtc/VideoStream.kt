@@ -37,6 +37,8 @@ class VideoStream(
     private var camera: Camera? = null
     private var cameraRecipientId: String? = null
 
+    private var sentCodecConfigForRecipient: String? = null
+
     fun attachMeshService(meshService: BluetoothMeshService) {
         this.meshService = meshService
     }
@@ -84,28 +86,66 @@ class VideoStream(
      * Encodes and sends the given [image]. Can be called from CameraX analyzer.
      */
     fun sendFrame(image: ImageProxy, recipientId: String?) {
-        val enc = encoder ?: encoderFactory.invoke().also { encoder = it }
-        val seq = seqNumber and 0xFFFF
-
-        enc.encode(image) { encoded ->
-            val payload = ByteArray(encoded.size + 2)
-            payload[0] = ((seq shr 8) and 0xFF).toByte()
-            payload[1] = (seq and 0xFF).toByte()
-            System.arraycopy(encoded, 0, payload, 2, encoded.size)
-
-            seqNumber = (seq + 1) and 0xFFFF
-
-            val ms = meshService
-            if (ms == null) {
-                Log.w(TAG, "No BluetoothMeshService attached — call attachMeshService(meshService) before sending")
-                return@encode
-            }
-            try {
-                ms.sendVideo(recipientId, payload)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send video frame seq=$seq: ${e.message}")
-            }
+        if (recipientId == null) {
+            Log.w(TAG, "sendFrame: recipientId is null; dropping video frame")
+            image.close()
+            return
         }
+
+        val enc = encoder ?: encoderFactory.invoke().also { encoder = it }
+
+        enc.encode(
+            image,
+            onEncoded = { encoded ->
+                val seq = seqNumber and 0xFFFF
+
+                val payload = ByteArray(encoded.size + 2)
+                payload[0] = ((seq shr 8) and 0xFF).toByte()
+                payload[1] = (seq and 0xFF).toByte()
+                System.arraycopy(encoded, 0, payload, 2, encoded.size)
+
+                seqNumber = (seq + 1) and 0xFFFF
+
+                val ms = meshService
+                if (ms == null) {
+                    Log.w(TAG, "No BluetoothMeshService attached — call attachMeshService(meshService) before sending")
+                    return@encode
+                }
+
+                if (Log.isLoggable(TAG, Log.DEBUG)) {
+                    Log.d(TAG, "sendFrame: seq=$seq encodedBytes=${encoded.size} payloadBytes=${payload.size} -> $recipientId")
+                }
+
+                try {
+                    ms.sendVideo(recipientId, payload)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send video frame seq=$seq: ${e.message}")
+                }
+            },
+            onCodecConfig = { configBytes ->
+                if (sentCodecConfigForRecipient == recipientId) return@encode
+                sentCodecConfigForRecipient = recipientId
+
+                val payload = ByteArray(configBytes.size + 2)
+                payload[0] = 0
+                payload[1] = 0
+                System.arraycopy(configBytes, 0, payload, 2, configBytes.size)
+
+                val ms = meshService
+                if (ms == null) {
+                    Log.w(TAG, "No BluetoothMeshService attached — cannot send codec config")
+                    return@encode
+                }
+
+                Log.d(TAG, "Sending VIDEO codec config bytes=${configBytes.size} to $recipientId")
+
+                try {
+                    ms.sendVideo(recipientId, payload)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send video codec config: ${e.message}")
+                }
+            }
+        )
     }
 
     fun handleIncomingVideo(packet: BitchatPacket) {
@@ -126,6 +166,13 @@ class VideoStream(
         // Send VIDEO_ACK
         meshService?.sendVideoAck(packet.senderID.toHexString(), seq)
 
+        // seq=0 is reserved for codec config (VPS/SPS/PPS or SPS/PPS)
+        if (seq == 0 && decoder is MediaCodecVideoDecoder) {
+            Log.d(TAG, "Received VIDEO codec config seq=0 bytes=${data.size} from ${packet.senderID.toHexString()}")
+            decoder.setCodecConfig(data)
+            return
+        }
+
         decoder.decode(data, presentationTimeUs = packet.timestamp.toLong() * 1000L, onFrameDecoded = onFrameDecoded)
     }
 
@@ -142,6 +189,8 @@ class VideoStream(
     fun stop() {
         // Stop the capture first to avoid analyzer threads feeding frames during teardown
         stopCamera()
+
+        sentCodecConfigForRecipient = null
 
         try {
             encoder?.release()

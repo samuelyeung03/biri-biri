@@ -1,5 +1,8 @@
 package com.bitchat.android.ui
 
+import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -8,31 +11,68 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 
 /**
  * Full-screen video call UI.
  *
- * Rendering is intentionally not wired yet, so the video surface is a placeholder.
+ * Uses a SurfaceView for remote video rendering.
  */
 @Composable
 fun VideoCallScreen(
     modifier: Modifier = Modifier,
-    onHangUp: () -> Unit
+    onHangUp: () -> Unit,
+    onRemoteSurfaceAvailable: (Surface) -> Unit,
+    onRemoteSurfaceDestroyed: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        // Placeholder for video rendering (to be implemented later)
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
+        val holderCallback = remember {
+            object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    onRemoteSurfaceAvailable(holder.surface)
+                }
+
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    // no-op
+                }
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    onRemoteSurfaceDestroyed()
+                }
+            }
+        }
+
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = {
+                SurfaceView(context).apply {
+                    // Best-effort: keep screen on during call
+                    keepScreenOn = true
+                    holder.addCallback(holderCallback)
+                }
+            },
+            update = { /* no-op */ }
         )
+
+        // Ensure callback is removed when composable disposes.
+        DisposableEffect(Unit) {
+            onDispose {
+                onRemoteSurfaceDestroyed()
+            }
+        }
 
         FloatingActionButton(
             onClick = onHangUp,
@@ -46,4 +86,3 @@ fun VideoCallScreen(
         }
     }
 }
-
