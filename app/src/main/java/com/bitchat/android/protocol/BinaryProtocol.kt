@@ -15,6 +15,8 @@ enum class MessageType(val value: UByte) {
     LEAVE(0x03u),
     VOICE(0x12u), // Audio packet type (used by RTCManager)
     VOICE_ACK(0x13u), // ACK for voice packet
+    VIDEO(0x15u), // Video packet type (used by RTCManager/VideoStream)
+    VIDEO_ACK(0x16u), // ACK for video packet
     RTC_SYNC(0x14u), // New: Invitation to start call (private invite)
     PING(0x4u),
     PONG(0x5u),

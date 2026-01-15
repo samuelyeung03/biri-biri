@@ -160,6 +160,8 @@ class PacketProcessor(private val myPeerID: String) {
                         MessageType.FILE_TRANSFER -> handleMessage(routed)
                         MessageType.VOICE -> handleAudio(routed)
                         MessageType.VOICE_ACK -> handleVoiceAck(routed)
+                        MessageType.VIDEO -> handleVideo(routed)
+                        MessageType.VIDEO_ACK -> handleVideoAck(routed)
                         MessageType.RTC_SYNC -> handleRTCSync(routed)
                         else -> {
                             validPacket = false
@@ -294,6 +296,22 @@ class PacketProcessor(private val myPeerID: String) {
         delegate?.onVoiceAckReceived(routed)
     }
 
+    private suspend fun handleVideo(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing VIDEO (private) from ${formatPeerForLog(peerID)}")
+        try {
+            delegate?.handleVideo(routed)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to process VIDEO from ${formatPeerForLog(peerID)}: ${e.message}")
+        }
+    }
+
+    private suspend fun handleVideoAck(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing VIDEO_ACK from ${formatPeerForLog(peerID)}")
+        delegate?.onVideoAckReceived(routed)
+    }
+
     /**
      * Handle delivery acknowledgment
      */
@@ -378,4 +396,8 @@ interface PacketProcessorDelegate {
     fun relayPacket(routed: RoutedPacket)
     // New: dedicated audio handler for private AUDIO packets
     fun handleAudio(routed: RoutedPacket)
+
+    // Video
+    fun handleVideo(routed: RoutedPacket)
+    fun onVideoAckReceived(routed: RoutedPacket)
 }

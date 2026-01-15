@@ -449,6 +449,10 @@ class BluetoothMeshService(private val context: Context) {
                 rtcConnectionManager.handleVoiceAck(routed.packet)
             }
 
+            override fun onVideoAckReceived(routed: RoutedPacket) {
+                rtcConnectionManager.handleVideoAck(routed.packet)
+            }
+
             override fun validatePacketSecurity(packet: BitchatPacket, peerID: String): Boolean {
                 return securityManager.validatePacket(packet, peerID)
             }
@@ -547,6 +551,11 @@ class BluetoothMeshService(private val context: Context) {
             override fun handleAudio(routed: RoutedPacket) {
                 // Audio is private-only; decode+play on the service scope via MessageHandler
                 serviceScope.launch { messageHandler.handleAudio(routed) }
+            }
+
+            override fun handleVideo(routed: RoutedPacket) {
+                // Video is private-only; forward to RTC connection manager (decoding/rendering is handled elsewhere)
+                rtcConnectionManager.handleIncomingVideo(routed.packet)
             }
 
             override fun handleFragment(packet: BitchatPacket): BitchatPacket? {
@@ -883,6 +892,67 @@ class BluetoothMeshService(private val context: Context) {
                 Log.d(TAG, "🗣️ Sent VOICE_ACK for seq=$seq to $recipientPeerID")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Failed to send voice ack for seq=$seq: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Send encoded Video
+     * For use by VideoStream / RTCConnectionManager
+     */
+    fun sendVideo(recipientPeerID: String?, payload: ByteArray) {
+        if (payload.isEmpty()) return
+        val seq = if (payload.size >= 2) {
+            ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+        } else {
+            -1
+        }
+        Log.d(TAG, "📹 sendVideo: recipient=${recipientPeerID ?: "BROADCAST"}, payloadSize=${payload.size} bytes, seq=$seq")
+
+        serviceScope.launch {
+            try {
+                val packet = BitchatPacket(
+                    version = 1u,
+                    type = MessageType.VIDEO.value,
+                    senderID = hexStringToByteArray(myPeerID),
+                    recipientID = hexStringToByteArray(recipientPeerID!!),
+                    timestamp = System.currentTimeMillis().toULong(),
+                    payload = payload,
+                    signature = null,
+                    ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+                )
+                val signed = signPacketBeforeBroadcast(packet)
+                val transferId = sha256Hex(payload)
+                connectionManager.broadcastPacket(RoutedPacket(signed, transferId = transferId))
+                Log.d(TAG, "🚀 sendVideo: Broadcasted packet for seq=$seq, transferId=$transferId")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to send video frame for seq=$seq: ${e.message}")
+            }
+        }
+    }
+
+    fun sendVideoAck(recipientPeerID: String, seq: Int) {
+        serviceScope.launch {
+            try {
+                val payload = ByteArray(2)
+                payload[0] = ((seq shr 8) and 0xFF).toByte()
+                payload[1] = (seq and 0xFF).toByte()
+
+                val packet = BitchatPacket(
+                    version = 1u,
+                    type = MessageType.VIDEO_ACK.value,
+                    senderID = hexStringToByteArray(myPeerID),
+                    recipientID = hexStringToByteArray(recipientPeerID),
+                    timestamp = System.currentTimeMillis().toULong(),
+                    payload = payload,
+                    signature = null,
+                    ttl = com.bitchat.android.util.AppConstants.MESSAGE_TTL_HOPS
+                )
+                val signed = signPacketBeforeBroadcast(packet)
+                connectionManager.broadcastPacket(RoutedPacket(signed))
+                Log.d(TAG, "📹 Sent VIDEO_ACK for seq=$seq to $recipientPeerID")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Failed to send video ack for seq=$seq: ${e.message}")
             }
         }
     }
