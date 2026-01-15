@@ -26,7 +26,8 @@ class CommandProcessor(
     private val baseCommands = listOf(
         CommandSuggestion("/call", emptyList(), "<nickname>", "start a voice call with a peer"),
         CommandSuggestion("/hangup", emptyList(), "[nickname]", "hang up a voice call"),
-        CommandSuggestion("/ping",listOf(), "<nickname>", "ping a peer"),
+        CommandSuggestion("/videocall", emptyList(), "<nickname>", "start a video call with a peer"),
+        CommandSuggestion("/ping", listOf(), "<nickname>", "ping a peer"),
         CommandSuggestion("/block", emptyList(), "[nickname]", "block or list blocked peers"),
         CommandSuggestion("/channels", emptyList(), null, "show all discovered channels"),
         CommandSuggestion("/clear", emptyList(), null, "clear chat messages"),
@@ -44,7 +45,7 @@ class CommandProcessor(
 
     fun processCommand(command: String, meshService: BluetoothMeshService, myPeerID: String, onSendMessage: (String, List<String>, String?) -> Unit, viewModel: ChatViewModel? = null): Boolean {
         if (!command.startsWith("/")) return false
-        
+
         val parts = command.split(" ")
         val cmd = parts.first().lowercase()
         when (cmd) {
@@ -61,9 +62,10 @@ class CommandProcessor(
             "/ping" -> handlePingCommand(parts, meshService)
             "/call" -> handleCallCommand(parts, meshService)
             "/hangup" -> handleHangupCommand(parts, meshService)
+            "/videocall" -> handleVideoCallCommand(parts, meshService)
             else -> handleUnknownCommand(cmd)
         }
-        
+
         return true
     }
     
@@ -480,6 +482,58 @@ class CommandProcessor(
             val systemMessage = BitchatMessage(sender = "system", content = "All calls ended.", timestamp = Date(), isRelay = false)
             messageManager.addMessage(systemMessage)
         }
+    }
+
+    private fun handleVideoCallCommand(parts: List<String>, meshService: BluetoothMeshService) {
+        if (parts.size < 2) {
+            val systemMessage = BitchatMessage(
+                sender = "system",
+                content = "usage: /videocall <nickname>",
+                timestamp = Date(),
+                isRelay = false
+            )
+            messageManager.addMessage(systemMessage)
+            return
+        }
+
+        val targetName = parts[1].removePrefix("@")
+        val peerID = getPeerIDForNickname(targetName, meshService)
+        if (peerID == null) {
+            val systemMessage = BitchatMessage(
+                sender = "system",
+                content = "user '$targetName' not found.",
+                timestamp = Date(),
+                isRelay = false
+            )
+            messageManager.addMessage(systemMessage)
+            return
+        }
+
+        // If already in a call with this peer, inform user
+        if (activeCalls.containsKey(peerID)) {
+            val systemMessage = BitchatMessage(
+                sender = "system",
+                content = "Already in a call with $targetName",
+                timestamp = Date(),
+                isRelay = false
+            )
+            messageManager.addMessage(systemMessage)
+            return
+        }
+
+        val rtc = meshService.rtcConnectionManager
+        activeCalls[peerID] = rtc
+
+        val systemMessage = BitchatMessage(
+            sender = "system",
+            content = "Starting video call with $targetName...",
+            timestamp = Date(),
+            isRelay = false
+        )
+        messageManager.addMessage(systemMessage)
+
+        // Delegate all call-control logic to RTCConnectionManager
+        rtc.startOutgoingVideoCall(peerID)
     }
 
     private fun handleUnknownCommand(cmd: String) {

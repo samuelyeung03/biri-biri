@@ -593,82 +593,8 @@ class BluetoothMeshService(private val context: Context) {
             }
 
             override fun handleRTCSync(routed: RoutedPacket) {
-                serviceScope.launch {
-                    try {
-                        val fromPeer = routed.peerID ?: return@launch
-                        val payload = routed.packet.payload
-
-                        val sync = RTCSync.decode(payload)
-                        if (sync == null) {
-                            Log.w(TAG, "Received RTC_SYNC with empty/invalid payload from $fromPeer")
-                            return@launch
-                        }
-
-                        when (sync.syncType) {
-                            RTCSync.SyncType.INVITE -> {
-                                Log.d(TAG, "📨 Received RTC_INVITE from $fromPeer callType=${sync.callType} mode=${sync.mode}")
-
-                                if (sync.callType == RTCSync.CallType.VIDEO) {
-                                    Log.w(TAG, "RTC video invite received but video is not implemented yet; ignoring")
-                                    return@launch
-                                }
-
-                                if (sync.mode == RTCSync.Mode.TWO_WAY) {
-                                    // Auto-answer: start sending audio back to the inviter
-                                    try {
-                                        Log.d(TAG, "📞 Auto-answering RTC_INVITE from $fromPeer")
-                                        rtcConnectionManager.startCall(
-                                            senderId = delegate?.getNickname() ?: myPeerID,
-                                            recipientId = fromPeer
-                                        )
-
-                                        // Let the inviter know we're ready (UX/handshake)
-                                        sendRTCSync(
-                                            recipientPeerID = fromPeer,
-                                            syncType = RTCSync.SyncType.ACCEPT,
-                                            callType = sync.callType,
-                                            mode = sync.mode
-                                        )
-
-                                        val sys = BitchatMessage(
-                                            sender = "system",
-                                            content = "Auto-answered two-way call from ${peerManager.getPeerNickname(fromPeer) ?: fromPeer}",
-                                            timestamp = Date(),
-                                            isRelay = false
-                                        )
-                                        delegate?.didReceiveMessage(sys)
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Failed to auto-answer RTC_INVITE from $fromPeer: ${e.message}")
-                                    }
-                                } else {
-                                    Log.d(TAG, "Received one-way RTC_INVITE from $fromPeer (no auto-answer)")
-                                }
-                            }
-
-                            RTCSync.SyncType.ACCEPT -> {
-                                Log.d(TAG, "✅ Received RTC_ACCEPT from $fromPeer callType=${sync.callType} mode=${sync.mode}")
-                            }
-
-                            RTCSync.SyncType.HANGUP -> {
-                                Log.d(TAG, "🛑 Received RTC_HANGUP from $fromPeer")
-                                try {
-                                    rtcConnectionManager.stopCall()
-                                } catch (_: Exception) {
-                                }
-
-                                val sys = BitchatMessage(
-                                    sender = "system",
-                                    content = "Call ended by ${peerManager.getPeerNickname(fromPeer) ?: fromPeer}",
-                                    timestamp = Date(),
-                                    isRelay = false
-                                )
-                                delegate?.didReceiveMessage(sys)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "handleRTCSync failed: ${e.message}")
-                    }
-                }
+                val fromPeer = routed.peerID ?: return
+                rtcConnectionManager.handleRTCSync(routed.packet, fromPeer)
             }
         }
 
@@ -1629,7 +1555,7 @@ class BluetoothMeshService(private val context: Context) {
         }
     }
 
-    private fun sendRTCSync(
+    fun sendRTCSync(
         recipientPeerID: String,
         syncType: RTCSync.SyncType,
         callType: RTCSync.CallType,

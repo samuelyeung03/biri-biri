@@ -32,7 +32,30 @@ class RTCConnectionManager(
         private const val TAG = "RTCConnectionManager"
     }
 
+    /**
+     * Optional callback for surfacing call-control events (invite/accept/hangup) without UI wiring.
+     */
+    var onCallControlEvent: ((CallControlEvent) -> Unit)? = null
+
+    sealed class CallControlEvent {
+        data class Invite(val fromPeerId: String, val callType: RTCSync.CallType, val mode: RTCSync.Mode) : CallControlEvent()
+        data class Accept(val fromPeerId: String, val callType: RTCSync.CallType, val mode: RTCSync.Mode) : CallControlEvent()
+        data class Hangup(val fromPeerId: String, val callType: RTCSync.CallType) : CallControlEvent()
+        data class Invalid(val fromPeerId: String) : CallControlEvent()
+    }
+
     private var meshServiceRef: BluetoothMeshService? = null
+
+    private var lifecycleOwnerRef: LifecycleOwner? = null
+
+    /**
+     * Set a LifecycleOwner for camera-based video calls.
+     *
+     * We avoid any UI wiring here; the app can pass the current lifecycle owner (e.g. activity).
+     */
+    fun setLifecycleOwnerForVideo(lifecycleOwner: LifecycleOwner?) {
+        lifecycleOwnerRef = lifecycleOwner
+    }
 
     private val voiceStream: VoiceStream = VoiceStream(
         context = context,
@@ -66,6 +89,77 @@ class RTCConnectionManager(
         this.meshServiceRef = meshService
         this.voiceStream.attachMeshService(meshService)
         this.videoStream.attachMeshService(meshService)
+    }
+
+    /**
+     * Handle incoming RTC_SYNC control packet.
+     *
+     * This used to live in BluetoothMeshService, but is now centralized here.
+     */
+    fun handleRTCSync(packet: BitchatPacket, fromPeerId: String) {
+        val sync = RTCSync.decode(packet.payload)
+        if (sync == null) {
+            Log.w(TAG, "Received RTC_SYNC with empty/invalid payload from $fromPeerId")
+            onCallControlEvent?.invoke(CallControlEvent.Invalid(fromPeerId))
+            return
+        }
+
+        when (sync.syncType) {
+            RTCSync.SyncType.INVITE -> {
+                Log.d(TAG, "📨 Received RTC_INVITE from $fromPeerId callType=${sync.callType} mode=${sync.mode}")
+                onCallControlEvent?.invoke(CallControlEvent.Invite(fromPeerId, sync.callType, sync.mode))
+
+                if (sync.mode == RTCSync.Mode.TWO_WAY) {
+                    // Auto-answer behavior matches previous implementation.
+                    when (sync.callType) {
+                        RTCSync.CallType.VOICE -> {
+                            startCall(senderId = meshServiceRef?.myPeerID ?: "", recipientId = fromPeerId)
+                            // Let the inviter know we're ready
+                            meshServiceRef?.sendRTCSync(
+                                recipientPeerID = fromPeerId,
+                                syncType = RTCSync.SyncType.ACCEPT,
+                                callType = sync.callType,
+                                mode = sync.mode
+                            )
+                        }
+                        RTCSync.CallType.VIDEO -> {
+                            val ctx = context
+                            val lc = lifecycleOwnerRef
+                            if (ctx == null || lc == null) {
+                                Log.w(TAG, "Cannot auto-answer video invite: missing context or lifecycleOwner")
+                                return
+                            }
+
+                            // Start camera capture+send. Rendering is not wired; decoding uses callback if set.
+                            startVideo(lifecycleOwner = lc, recipientId = fromPeerId, onDecodedFrame = null)
+
+                            meshServiceRef?.sendRTCSync(
+                                recipientPeerID = fromPeerId,
+                                syncType = RTCSync.SyncType.ACCEPT,
+                                callType = sync.callType,
+                                mode = sync.mode
+                            )
+                        }
+                    }
+                } else {
+                    Log.d(TAG, "Received one-way RTC_INVITE from $fromPeerId (no auto-answer)")
+                }
+            }
+
+            RTCSync.SyncType.ACCEPT -> {
+                Log.d(TAG, "✅ Received RTC_ACCEPT from $fromPeerId callType=${sync.callType} mode=${sync.mode}")
+                onCallControlEvent?.invoke(CallControlEvent.Accept(fromPeerId, sync.callType, sync.mode))
+            }
+
+            RTCSync.SyncType.HANGUP -> {
+                Log.d(TAG, "🛑 Received RTC_HANGUP from $fromPeerId")
+                when (sync.callType) {
+                    RTCSync.CallType.VOICE -> stopCall()
+                    RTCSync.CallType.VIDEO -> stopVideo()
+                }
+                onCallControlEvent?.invoke(CallControlEvent.Hangup(fromPeerId, sync.callType))
+            }
+        }
     }
 
     fun attachMeshService(meshService: BluetoothMeshService) {
@@ -132,5 +226,42 @@ class RTCConnectionManager(
 
     fun handleVideoAck(packet: BitchatPacket) {
         videoStream.handleVideoAck(packet)
+    }
+
+    /**
+     * Start an outgoing video call to [peerId].
+     *
+     * This method owns the call-control logic:
+     * - sends RTC_SYNC INVITE (VIDEO, TWO_WAY)
+     * - starts local camera capture if a LifecycleOwner was provided via [setLifecycleOwnerForVideo]
+     *
+     * Rendering is intentionally not wired here.
+     */
+    fun startOutgoingVideoCall(peerId: String) {
+        val ms = meshServiceRef
+        if (ms == null) {
+            Log.w(TAG, "startOutgoingVideoCall: no mesh service attached")
+            return
+        }
+
+        // Send invite first
+        try {
+            ms.sendRTCSync(
+                recipientPeerID = peerId,
+                syncType = RTCSync.SyncType.INVITE,
+                callType = RTCSync.CallType.VIDEO,
+                mode = RTCSync.Mode.TWO_WAY
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send VIDEO INVITE to $peerId: ${e.message}")
+        }
+
+        // Start local capture if possible
+        val lc = lifecycleOwnerRef
+        if (lc != null) {
+            startVideo(lifecycleOwner = lc, recipientId = peerId, onDecodedFrame = null)
+        } else {
+            Log.d(TAG, "startOutgoingVideoCall: lifecycleOwner not set; camera start deferred")
+        }
     }
 }
