@@ -244,7 +244,8 @@ class MainActivity : OrientationAwareActivity() {
                         try {
                             meshService.rtcConnectionManager.startOutgoingVideoCall(
                                 peerId = peerId,
-                                lifecycleOwner = this@MainActivity
+                                lifecycleOwner = this@MainActivity,
+                                mode = com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY
                             )
                         } catch (_: Exception) {
                         }

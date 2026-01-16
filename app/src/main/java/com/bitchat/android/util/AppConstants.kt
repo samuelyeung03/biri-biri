@@ -139,8 +139,8 @@ object AppConstants {
     object VideoCall {
         const val DEFAULT_CODEC: String = "video/hevc"
         const val DEFAULT_WIDTH: Int = 640
-        const val DEFAULT_HEIGHT: Int = 480
-        const val DEFAULT_FRAME_RATE: Int = 2
+        const val DEFAULT_HEIGHT: Int = 360
+        const val DEFAULT_FRAME_RATE: Int = 10
         const val DEFAULT_BITRATE_BPS: Int = 50_000 // 50kbps
     }
 }

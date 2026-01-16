@@ -98,7 +98,16 @@ class VideoStream(
             return
         }
 
-        val enc = encoder ?: encoderFactory.invoke().also { encoder = it }
+        val desiredW = image.width
+        val desiredH = image.height
+
+        val enc = encoder?.takeIf { it.width == desiredW && it.height == desiredH } ?: run {
+            // CameraX can deliver a different resolution than requested. If we feed 640x480 into
+            // a 640x360 encoder, the codec input buffers will be too small and frames will be dropped.
+            runCatching { encoder?.release() }
+            sentCodecConfigForRecipient = null
+            VideoEncoder(width = desiredW, height = desiredH).also { encoder = it }
+        }
 
         enc.encode(
             image,

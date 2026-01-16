@@ -268,7 +268,11 @@ class RTCConnectionManager(
      *
      * Option B: pass the [lifecycleOwner] explicitly rather than storing it.
      */
-    fun startOutgoingVideoCall(peerId: String, lifecycleOwner: LifecycleOwner? = null) {
+    fun startOutgoingVideoCall(
+        peerId: String,
+        lifecycleOwner: LifecycleOwner? = null,
+        mode: RTCSync.Mode = RTCSync.Mode.TWO_WAY
+    ) {
         val ms = meshServiceRef
         if (ms == null) {
             Log.w(TAG, "startOutgoingVideoCall: no mesh service attached")
@@ -281,7 +285,7 @@ class RTCConnectionManager(
                 recipientPeerID = peerId,
                 syncType = RTCSync.SyncType.INVITE,
                 callType = RTCSync.CallType.VIDEO,
-                mode = RTCSync.Mode.TWO_WAY
+                mode = mode
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send VIDEO INVITE to $peerId: ${e.message}")

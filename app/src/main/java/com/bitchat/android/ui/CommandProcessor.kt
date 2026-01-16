@@ -489,7 +489,7 @@ class CommandProcessor(
         if (parts.size < 2) {
             val systemMessage = BitchatMessage(
                 sender = "system",
-                content = "usage: /videocall <nickname>",
+                content = "usage: /videocall <nickname> [oneway|twoway]",
                 timestamp = Date(),
                 isRelay = false
             )
@@ -510,6 +510,22 @@ class CommandProcessor(
             return
         }
 
+        val modeArg = parts.getOrNull(2)?.lowercase()
+        val mode = when (modeArg) {
+            null, "twoway", "two-way", "2way", "two" -> com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY
+            "oneway", "one-way", "1way", "one", "mono" -> com.bitchat.android.rtc.RTCSync.Mode.ONE_WAY
+            else -> {
+                val systemMessage = BitchatMessage(
+                    sender = "system",
+                    content = "usage: /videocall <nickname> [oneway|twoway]",
+                    timestamp = Date(),
+                    isRelay = false
+                )
+                messageManager.addMessage(systemMessage)
+                return
+            }
+        }
+
         // If already in a call with this peer, inform user
         if (activeCalls.containsKey(peerID)) {
             val systemMessage = BitchatMessage(
@@ -525,9 +541,10 @@ class CommandProcessor(
         val rtc = meshService.rtcConnectionManager
         activeCalls[peerID] = rtc
 
+        val callTypeLabel = if (mode == com.bitchat.android.rtc.RTCSync.Mode.ONE_WAY) "one-way" else "two-way"
         val systemMessage = BitchatMessage(
             sender = "system",
-            content = "Starting video call with $targetName...",
+            content = "Starting $callTypeLabel video call with $targetName...",
             timestamp = Date(),
             isRelay = false
         )
@@ -537,7 +554,7 @@ class CommandProcessor(
         onVideoCallRequested?.invoke(peerID)
 
         // Start call-control (invite). Camera start will be handled by UI later when it passes a LifecycleOwner.
-        rtc.startOutgoingVideoCall(peerID, lifecycleOwner = null)
+        rtc.startOutgoingVideoCall(peerID, lifecycleOwner = null, mode = mode)
     }
 
     private fun handleUnknownCommand(cmd: String) {

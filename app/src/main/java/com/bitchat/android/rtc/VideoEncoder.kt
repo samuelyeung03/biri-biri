@@ -1,11 +1,14 @@
 package com.bitchat.android.rtc
 
+import android.graphics.ImageFormat
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import com.bitchat.android.util.AppConstants
+import java.nio.ByteBuffer
 
 /**
  * Encodes video frames using MediaCodec (H.264/AVC).
@@ -15,13 +18,15 @@ import com.bitchat.android.util.AppConstants
  */
 class VideoEncoder(
     private val codecType: String = AppConstants.VideoCall.DEFAULT_CODEC,
-    private val width: Int = AppConstants.VideoCall.DEFAULT_WIDTH,
-    private val height: Int = AppConstants.VideoCall.DEFAULT_HEIGHT,
+    val width: Int = AppConstants.VideoCall.DEFAULT_WIDTH,
+    val height: Int = AppConstants.VideoCall.DEFAULT_HEIGHT,
     private val frameRate: Int = AppConstants.VideoCall.DEFAULT_FRAME_RATE,
     private val bitRate: Int = AppConstants.VideoCall.DEFAULT_BITRATE_BPS
 ) {
     private var mediaCodec: MediaCodec? = null
     private val timeoutUs: Long = 10000
+
+    private var selectedColorFormat: Int = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
 
     // Latest codec config (e.g., VPS/SPS/PPS for HEVC). Some decoders need this in-band.
     private var lastCodecConfig: ByteArray? = null
@@ -32,17 +37,55 @@ class VideoEncoder(
 
     private fun setupCodec() {
         try {
+            // Pick a concrete encoder and supported color format.
+            val codecName = MediaCodecList(MediaCodecList.ALL_CODECS)
+                .codecInfos
+                .firstOrNull { info ->
+                    info.isEncoder && info.supportedTypes.any { it.equals(codecType, ignoreCase = true) }
+                }
+                ?.name
+
+            if (codecName == null) {
+                // Fallback: let framework pick.
+                selectedColorFormat = MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+                val format = MediaFormat.createVideoFormat(codecType, width, height)
+                format.setInteger(MediaFormat.KEY_COLOR_FORMAT, selectedColorFormat)
+                format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+                format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
+                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+
+                mediaCodec = MediaCodec.createEncoderByType(codecType)
+                mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                mediaCodec?.start()
+                Log.d(TAG, "MediaCodec encoder started: $codecType ${width}x${height} @${frameRate}fps (color=$selectedColorFormat)")
+                return
+            }
+
+            val info = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.first { it.name == codecName }
+            val caps = info.getCapabilitiesForType(codecType)
+
+            // Prefer flexible; otherwise prefer NV12/NV21 (SemiPlanar) then Planar.
+            selectedColorFormat = when {
+                caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible) ->
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+                caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) ->
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+                caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) ->
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
+                else -> MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+            }
+
             val format = MediaFormat.createVideoFormat(codecType, width, height)
-            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, selectedColorFormat)
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // 2 seconds between I-frames
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // seconds
 
-            mediaCodec = MediaCodec.createEncoderByType(codecType)
+            mediaCodec = MediaCodec.createByCodecName(codecName)
             mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             mediaCodec?.start()
 
-            Log.d(TAG, "MediaCodec encoder started: $codecType ${width}x${height} @${frameRate}fps")
+            Log.d(TAG, "MediaCodec encoder started: $codecName ($codecType) ${width}x${height} @${frameRate}fps color=$selectedColorFormat")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to setup MediaCodec: ${e.message}", e)
         }
@@ -66,22 +109,41 @@ class VideoEncoder(
         }
 
         try {
-            if (image.format != android.graphics.ImageFormat.YUV_420_888) {
+            if (image.format != ImageFormat.YUV_420_888) {
                 Log.w(TAG, "Unsupported ImageProxy format=${image.format}, expected YUV_420_888")
                 return
             }
 
-            val i420 = yuv420888ToI420(image)
+            val inputFrame: ByteArray = when (selectedColorFormat) {
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> yuv420888ToI420(image)
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> yuv420888ToNV12(image)
+                else -> yuv420888ToNV12(image)
+            }
 
             val inputBufferIndex = codec.dequeueInputBuffer(timeoutUs)
             if (inputBufferIndex >= 0) {
                 val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-                inputBuffer?.clear()
-                inputBuffer?.put(i420)
+                if (inputBuffer == null) {
+                    Log.w(TAG, "Encoder inputBuffer null")
+                } else {
+                    inputBuffer.clear()
 
-                // Presentation timestamp in microseconds
-                val ptsUs = image.imageInfo.timestamp / 1000L
-                codec.queueInputBuffer(inputBufferIndex, 0, i420.size, ptsUs, 0)
+                    // Guard: avoid BufferOverflowException.
+                    if (inputBuffer.capacity() < inputFrame.size) {
+                        Log.e(
+                            TAG,
+                            "Encoder input buffer too small (cap=${inputBuffer.capacity()} < frame=${inputFrame.size}). Dropping frame. color=$selectedColorFormat ${width}x${height}"
+                        )
+                        codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, 0)
+                        return
+                    }
+
+                    inputBuffer.put(inputFrame)
+
+                    val ptsUs = image.imageInfo.timestamp / 1000L
+                    codec.queueInputBuffer(inputBufferIndex, 0, inputFrame.size, ptsUs, 0)
+                }
             }
 
             val bufferInfo = MediaCodec.BufferInfo()
@@ -178,6 +240,59 @@ class VideoEncoder(
             output = out,
             outputOffset = outOffset
         )
+
+        return out
+    }
+
+    /**
+     * Convert YUV_420_888 -> NV12 (Y + interleaved UV).
+     * This is widely accepted by encoders when using COLOR_FormatYUV420SemiPlanar.
+     */
+    private fun yuv420888ToNV12(image: ImageProxy): ByteArray {
+        val w = image.width
+        val h = image.height
+
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+
+        val out = ByteArray(w * h + (w * h) / 2)
+
+        // Y
+        var outOffset = 0
+        outOffset = copyPlane(
+            buffer = yPlane.buffer,
+            rowStride = yPlane.rowStride,
+            pixelStride = yPlane.pixelStride,
+            width = w,
+            height = h,
+            output = out,
+            outputOffset = outOffset
+        )
+
+        // UV interleaved
+        val chromaW = w / 2
+        val chromaH = h / 2
+
+        val uRowStride = uPlane.rowStride
+        val vRowStride = vPlane.rowStride
+        val uPixelStride = uPlane.pixelStride
+        val vPixelStride = vPlane.pixelStride
+
+        val uBuf = uPlane.buffer.duplicate().apply { rewind() }
+        val vBuf = vPlane.buffer.duplicate().apply { rewind() }
+
+        // For each chroma sample, write U then V (NV12)
+        for (r in 0 until chromaH) {
+            val uRowStart = r * uRowStride
+            val vRowStart = r * vRowStride
+            for (c in 0 until chromaW) {
+                val uIndex = uRowStart + c * uPixelStride
+                val vIndex = vRowStart + c * vPixelStride
+                out[outOffset++] = uBuf.get(uIndex)
+                out[outOffset++] = vBuf.get(vIndex)
+            }
+        }
 
         return out
     }
