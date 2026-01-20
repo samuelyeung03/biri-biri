@@ -21,7 +21,9 @@ import com.bitchat.android.util.toHexString
 class VideoStream(
     private val width: Int = AppConstants.VideoCall.DEFAULT_WIDTH,
     private val height: Int = AppConstants.VideoCall.DEFAULT_HEIGHT,
-    private val encoderFactory: () -> VideoEncoder = { VideoEncoder(width = width, height = height) },
+    private val codec: String = AppConstants.VideoCall.DEFAULT_CODEC,
+    private val bitrateBps: Int = AppConstants.VideoCall.DEFAULT_BITRATE_BPS,
+    private val encoderFactory: () -> VideoEncoder = { VideoEncoder(codecType = codec, width = width, height = height, bitRate = bitrateBps) },
     private val decoder: VideoDecoder = H264VideoDecoder(width = width, height = height),
     private var meshService: BluetoothMeshService? = null,
     private var onFrameDecoded: ((DecodedVideoFrame) -> Unit)? = null
@@ -38,6 +40,8 @@ class VideoStream(
     private var cameraRecipientId: String? = null
 
     private var sentCodecConfigForRecipient: String? = null
+
+    private var negotiatedParams: RTCSync.VideoParams? = null
 
     fun attachMeshService(meshService: BluetoothMeshService) {
         this.meshService = meshService
@@ -98,15 +102,9 @@ class VideoStream(
             return
         }
 
-        val desiredW = image.width
-        val desiredH = image.height
-
-        val enc = encoder?.takeIf { it.width == desiredW && it.height == desiredH } ?: run {
-            // CameraX can deliver a different resolution than requested. If we feed 640x480 into
-            // a 640x360 encoder, the codec input buffers will be too small and frames will be dropped.
-            runCatching { encoder?.release() }
+        val enc = encoder ?: run {
             sentCodecConfigForRecipient = null
-            VideoEncoder(width = desiredW, height = desiredH).also { encoder = it }
+            encoderFactory().also { encoder = it }
         }
 
         enc.encode(
@@ -216,5 +214,17 @@ class VideoStream(
             decoder.release()
         } catch (_: Exception) {
         }
+    }
+
+    fun updateSendConfig(params: RTCSync.VideoParams) {
+        negotiatedParams = params
+
+        // Recreate encoder with new params next frame.
+        runCatching { encoder?.release() }
+        encoder = null
+        sentCodecConfigForRecipient = null
+
+        // NOTE: The Camera capture resolution is configured by this VideoStream's constructor width/height.
+        // If you need to change capture resolution dynamically, recreate VideoStream or restart camera.
     }
 }

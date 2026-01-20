@@ -347,6 +347,10 @@ class VideoEncoder(
         }
     }
 
+    fun getCodecType(): String = codecType
+    fun getBitrateBps(): Int = bitRate
+    fun getFrameRate(): Int = frameRate
+
     companion object {
         private const val TAG = "VideoEncoder"
     }

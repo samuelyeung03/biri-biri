@@ -3,8 +3,6 @@ package com.bitchat.android.ui
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.mesh.NetworkMetricsManager
 import com.bitchat.android.model.BitchatMessage
-import com.bitchat.android.model.BitchatMessageType
-import com.bitchat.android.protocol.MessageType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -24,6 +22,7 @@ class CommandProcessor(
 ) {
     //user for ping
     private val scope = CoroutineScope(Dispatchers.Main)
+
     // Available commands list
     private val baseCommands = listOf(
         CommandSuggestion("/call", emptyList(), "<nickname>", "start a voice call with a peer"),
@@ -42,8 +41,8 @@ class CommandProcessor(
     )
 
     // MARK: - Command Processing
+
     // Active RTC managers by peerID
-    private val activeCalls = mutableMapOf<String, com.bitchat.android.rtc.RTCConnectionManager>()
 
     fun processCommand(command: String, meshService: BluetoothMeshService, myPeerID: String, onSendMessage: (String, List<String>, String?) -> Unit, viewModel: ChatViewModel? = null): Boolean {
         if (!command.startsWith("/")) return false
@@ -440,7 +439,7 @@ class CommandProcessor(
         val isMono = parts.size > 2 && parts[2].lowercase() == "mono"
 
         // If already in a call with this peer, inform user
-        if (activeCalls.containsKey(peerID)) {
+        if (meshService.rtcConnectionManager.isVoiceCallActive(peerID)) {
             val systemMessage = BitchatMessage(sender = "system", content = "Already in a call with $targetName", timestamp = Date(), isRelay = false)
             messageManager.addMessage(systemMessage)
             return
@@ -448,7 +447,6 @@ class CommandProcessor(
 
         // Use shared RTC manager from mesh service to start sending audio
         val rtc = meshService.rtcConnectionManager
-        activeCalls[peerID] = rtc
         rtc.startCall(senderId = state.getNicknameValue() ?: meshService.myPeerID, recipientId = peerID)
 
         val callType = if (isMono) "one-way" else "two-way"
@@ -468,9 +466,18 @@ class CommandProcessor(
 
     private fun handleHangupCommand(parts: List<String>, meshService: BluetoothMeshService) {
         val targetPeerID = if (parts.size > 1) getPeerIDForNickname(parts[1].removePrefix("@"), meshService) else null
+        val rtc = meshService.rtcConnectionManager
+
         if (targetPeerID != null) {
-            val rtc = activeCalls.remove(targetPeerID)
-            rtc?.stopCall()
+            // Prefer peer-scoped stop when possible.
+            try {
+                rtc.stopVoiceCallWithPeer(targetPeerID)
+                rtc.stopVideoCallWithPeer(targetPeerID)
+            } catch (_: Exception) {
+                // Fallback: stop everything
+                rtc.stopCall()
+            }
+
             try {
                 meshService.sendHangup(targetPeerID)
             } catch (_: Exception) {
@@ -479,8 +486,7 @@ class CommandProcessor(
             messageManager.addMessage(systemMessage)
         } else {
             // Hang up all calls
-            activeCalls.values.forEach { it.stopCall() }
-            activeCalls.clear()
+            try { rtc.stopCall() } catch (_: Exception) {}
             val systemMessage = BitchatMessage(sender = "system", content = "All calls ended.", timestamp = Date(), isRelay = false)
             messageManager.addMessage(systemMessage)
         }
@@ -490,7 +496,7 @@ class CommandProcessor(
         if (parts.size < 2) {
             val systemMessage = BitchatMessage(
                 sender = "system",
-                content = "usage: /videocall <nickname> [oneway|twoway]",
+                content = "usage: /videocall <nickname> [oneway|twoway] [codec=<mime>] [bitrate=<bps|kbps>] [res=<WxH>]",
                 timestamp = Date(),
                 isRelay = false
             )
@@ -511,14 +517,16 @@ class CommandProcessor(
             return
         }
 
-        val modeArg = parts.getOrNull(2)?.lowercase()
+        // Parse args
+        val args = parts.drop(2)
+        val modeArg = args.firstOrNull { !it.contains('=') }?.lowercase()
         val mode = when (modeArg) {
             null, "twoway", "two-way", "2way", "two" -> com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY
             "oneway", "one-way", "1way", "one", "mono" -> com.bitchat.android.rtc.RTCSync.Mode.ONE_WAY
             else -> {
                 val systemMessage = BitchatMessage(
                     sender = "system",
-                    content = "usage: /videocall <nickname> [oneway|twoway]",
+                    content = "usage: /videocall <nickname> [oneway|twoway] [codec=<mime>] [bitrate=<bps|kbps>] [res=<WxH>]",
                     timestamp = Date(),
                     isRelay = false
                 )
@@ -527,8 +535,55 @@ class CommandProcessor(
             }
         }
 
+        fun parseBitrate(s: String): Int? {
+            val v = s.trim().lowercase()
+            return when {
+                v.endsWith("kbps") -> v.removeSuffix("kbps").toIntOrNull()?.let { it * 1000 }
+                v.endsWith("k") -> v.removeSuffix("k").toIntOrNull()?.let { it * 1000 }
+                else -> v.toIntOrNull()
+            }
+        }
+
+        fun parseRes(s: String): Pair<Int, Int>? {
+            val t = s.trim().lowercase().replace('x', 'x')
+            val parts2 = t.split("x")
+            if (parts2.size != 2) return null
+            val w = parts2[0].toIntOrNull() ?: return null
+            val h = parts2[1].toIntOrNull() ?: return null
+            return w to h
+        }
+
+        var codec: String? = null
+        var bitrateBps: Int? = null
+        var resW: Int? = null
+        var resH: Int? = null
+
+        args.filter { it.contains('=') }.forEach { kv ->
+            val idx = kv.indexOf('=')
+            val k = kv.substring(0, idx).lowercase()
+            val v = kv.substring(idx + 1)
+            when (k) {
+                "codec" -> codec = v
+                "bitrate" -> bitrateBps = parseBitrate(v)
+                "res", "resolution" -> {
+                    val r = parseRes(v)
+                    if (r != null) {
+                        resW = r.first
+                        resH = r.second
+                    }
+                }
+            }
+        }
+
+        val videoParams = com.bitchat.android.rtc.RTCSync.VideoParams(
+            codec = codec ?: com.bitchat.android.util.AppConstants.VideoCall.DEFAULT_CODEC,
+            width = resW ?: com.bitchat.android.util.AppConstants.VideoCall.DEFAULT_WIDTH,
+            height = resH ?: com.bitchat.android.util.AppConstants.VideoCall.DEFAULT_HEIGHT,
+            bitrateBps = bitrateBps ?: com.bitchat.android.util.AppConstants.VideoCall.DEFAULT_BITRATE_BPS
+        )
+
         // If already in a call with this peer, inform user
-        if (activeCalls.containsKey(peerID)) {
+        if (meshService.rtcConnectionManager.isVideoCallActive(peerID)) {
             val systemMessage = BitchatMessage(
                 sender = "system",
                 content = "Already in a call with $targetName",
@@ -539,13 +594,10 @@ class CommandProcessor(
             return
         }
 
-        val rtc = meshService.rtcConnectionManager
-        activeCalls[peerID] = rtc
-
         val callTypeLabel = if (mode == com.bitchat.android.rtc.RTCSync.Mode.ONE_WAY) "one-way" else "two-way"
         val systemMessage = BitchatMessage(
             sender = "system",
-            content = "Starting $callTypeLabel video call with $targetName...",
+            content = "Starting $callTypeLabel video call with $targetName... (codec=${videoParams.codec}, res=${videoParams.width}x${videoParams.height}, bitrate=${videoParams.bitrateBps})",
             timestamp = Date(),
             isRelay = false
         )
@@ -555,8 +607,8 @@ class CommandProcessor(
         onVideoCallModeRequested?.invoke(mode)
         onVideoCallRequested?.invoke(peerID)
 
-        // Start call-control (invite). Camera start will be handled by UI later when it passes a LifecycleOwner.
-        rtc.startOutgoingVideoCall(peerID, lifecycleOwner = null, mode = mode)
+        // Send INVITE with params.
+        meshService.rtcConnectionManager.startOutgoingVideoCall(peerID, lifecycleOwner = null, mode = mode, videoParams = videoParams)
     }
 
     private fun handleUnknownCommand(cmd: String) {

@@ -1559,9 +1559,10 @@ class BluetoothMeshService(private val context: Context) {
         recipientPeerID: String,
         syncType: RTCSync.SyncType,
         callType: RTCSync.CallType,
-        mode: RTCSync.Mode
+        mode: RTCSync.Mode,
+        videoParams: RTCSync.VideoParams? = null
     ) {
-        val payload = RTCSync(syncType = syncType, callType = callType, mode = mode).encode()
+        val payload = RTCSync(syncType = syncType, callType = callType, mode = mode, videoParams = videoParams).encode()
         val packet = BitchatPacket(
             version = 1u,
             type = MessageType.RTC_SYNC.value,

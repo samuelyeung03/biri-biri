@@ -32,14 +32,86 @@ class RTCConnectionManager(
         private const val TAG = "RTCConnectionManager"
     }
 
+    // --- Call state tracking (single source of truth) ---
+    private data class CallSession(
+        val peerId: String,
+        var voiceActive: Boolean = false,
+        var videoActive: Boolean = false
+    )
+
+    private val sessionsByPeer = mutableMapOf<String, CallSession>()
+
+    private fun session(peerId: String): CallSession {
+        return sessionsByPeer.getOrPut(peerId) { CallSession(peerId) }
+    }
+
+    /**
+     * True if we have an active voice call pipeline for this peer.
+     */
+    fun isVoiceCallActive(peerId: String): Boolean = sessionsByPeer[peerId]?.voiceActive == true
+
+    /**
+     * True if we have an active video call pipeline for this peer.
+     */
+    fun isVideoCallActive(peerId: String): Boolean = sessionsByPeer[peerId]?.videoActive == true
+
+    /**
+     * True if we have any active media pipeline for this peer.
+     */
+    fun isAnyCallActive(peerId: String): Boolean = isVoiceCallActive(peerId) || isVideoCallActive(peerId)
+
+    fun getActiveVoicePeers(): Set<String> = sessionsByPeer.values.filter { it.voiceActive }.map { it.peerId }.toSet()
+    fun getActiveVideoPeers(): Set<String> = sessionsByPeer.values.filter { it.videoActive }.map { it.peerId }.toSet()
+
+    /**
+     * Stop an active voice call with a specific peer.
+     */
+    fun stopVoiceCallWithPeer(peerId: String) {
+        if (!isVoiceCallActive(peerId)) return
+        // This implementation still uses a single VoiceStream instance.
+        // If you later support multiple concurrent calls, this becomes per-peer.
+        runCatching { voiceStream.stop() }
+        sessionsByPeer[peerId]?.voiceActive = false
+        cleanupSessionIfIdle(peerId)
+    }
+
+    /**
+     * Stop an active video call with a specific peer.
+     */
+    fun stopVideoCallWithPeer(peerId: String) {
+        if (!isVideoCallActive(peerId)) return
+        runCatching { videoStream.stop() }
+        sessionsByPeer[peerId]?.videoActive = false
+        cleanupSessionIfIdle(peerId)
+    }
+
+    private fun cleanupSessionIfIdle(peerId: String) {
+        val s = sessionsByPeer[peerId] ?: return
+        if (!s.voiceActive && !s.videoActive) {
+            sessionsByPeer.remove(peerId)
+        }
+    }
+
     /**
      * Optional callback for surfacing call-control events (invite/accept/hangup) without UI wiring.
      */
     var onCallControlEvent: ((CallControlEvent) -> Unit)? = null
 
     sealed class CallControlEvent {
-        data class Invite(val fromPeerId: String, val callType: RTCSync.CallType, val mode: RTCSync.Mode) : CallControlEvent()
-        data class Accept(val fromPeerId: String, val callType: RTCSync.CallType, val mode: RTCSync.Mode) : CallControlEvent()
+        data class Invite(
+            val fromPeerId: String,
+            val callType: RTCSync.CallType,
+            val mode: RTCSync.Mode,
+            val videoParams: RTCSync.VideoParams? = null
+        ) : CallControlEvent()
+
+        data class Accept(
+            val fromPeerId: String,
+            val callType: RTCSync.CallType,
+            val mode: RTCSync.Mode,
+            val videoParams: RTCSync.VideoParams? = null
+        ) : CallControlEvent()
+
         data class Hangup(val fromPeerId: String, val callType: RTCSync.CallType) : CallControlEvent()
         data class Invalid(val fromPeerId: String) : CallControlEvent()
     }
@@ -96,7 +168,7 @@ class RTCConnectionManager(
         when (sync.syncType) {
             RTCSync.SyncType.INVITE -> {
                 Log.d(TAG, "📨 Received RTC_INVITE from $fromPeerId callType=${sync.callType} mode=${sync.mode}")
-                onCallControlEvent?.invoke(CallControlEvent.Invite(fromPeerId, sync.callType, sync.mode))
+                onCallControlEvent?.invoke(CallControlEvent.Invite(fromPeerId, sync.callType, sync.mode, sync.videoParams))
 
                 when (sync.callType) {
                     RTCSync.CallType.VOICE -> {
@@ -115,41 +187,57 @@ class RTCConnectionManager(
                     }
 
                     RTCSync.CallType.VIDEO -> {
-                        // VIDEO handshake rule (per desired behavior):
-                        // - Always send ACCEPT on receiving an INVITE (both ONE_WAY and TWO_WAY)
-                        // - UI decides when to start camera/streaming
-                        //   * ONE_WAY: only inviter starts after receiving ACCEPT
-                        //   * TWO_WAY: both sides start after ACCEPT boundary
-                        Log.w(
-                            TAG,
-                            "Received VIDEO invite from $fromPeerId; sending ACCEPT and deferring camera start to UI"
-                        )
+                        // Persist requested params (if any) as the negotiated params for now.
+                        sync.videoParams?.let { negotiatedVideoParamsByPeer[fromPeerId] = it }
+
+                        Log.w(TAG, "Received VIDEO invite from $fromPeerId; sending ACCEPT and deferring camera start to UI")
 
                         meshServiceRef?.sendRTCSync(
                             recipientPeerID = fromPeerId,
                             syncType = RTCSync.SyncType.ACCEPT,
                             callType = sync.callType,
-                            mode = sync.mode
+                            mode = sync.mode,
+                            videoParams = sync.videoParams
                         )
+                        session(fromPeerId).videoActive = true
                     }
                 }
             }
 
             RTCSync.SyncType.ACCEPT -> {
                 Log.d(TAG, "✅ Received RTC_ACCEPT from $fromPeerId callType=${sync.callType} mode=${sync.mode}")
-                onCallControlEvent?.invoke(CallControlEvent.Accept(fromPeerId, sync.callType, sync.mode))
+                if (sync.callType == RTCSync.CallType.VIDEO) {
+                    sync.videoParams?.let { negotiatedVideoParamsByPeer[fromPeerId] = it }
+                }
+                onCallControlEvent?.invoke(CallControlEvent.Accept(fromPeerId, sync.callType, sync.mode, sync.videoParams))
+
+                if (sync.callType == RTCSync.CallType.VOICE) {
+                    session(fromPeerId).voiceActive = true
+                }
+                if (sync.callType == RTCSync.CallType.VIDEO) {
+                    session(fromPeerId).videoActive = true
+                }
             }
 
             RTCSync.SyncType.HANGUP -> {
                 Log.d(TAG, "🛑 Received RTC_HANGUP from $fromPeerId")
                 when (sync.callType) {
-                    RTCSync.CallType.VOICE -> stopCall()
-                    RTCSync.CallType.VIDEO -> stopVideo()
+                    RTCSync.CallType.VOICE -> {
+                        stopVoiceCallWithPeer(fromPeerId)
+                    }
+                    RTCSync.CallType.VIDEO -> {
+                        stopVideoCallWithPeer(fromPeerId)
+                    }
                 }
                 onCallControlEvent?.invoke(CallControlEvent.Hangup(fromPeerId, sync.callType))
+                negotiatedVideoParamsByPeer.remove(fromPeerId)
             }
         }
     }
+
+    private val negotiatedVideoParamsByPeer = mutableMapOf<String, RTCSync.VideoParams>()
+
+    fun getNegotiatedVideoParams(peerId: String): RTCSync.VideoParams? = negotiatedVideoParamsByPeer[peerId]
 
     fun attachMeshService(meshService: BluetoothMeshService) {
         this.meshServiceRef = meshService
@@ -158,7 +246,10 @@ class RTCConnectionManager(
     }
 
     fun startCall(senderId: String, recipientId: String?) {
-        Log.d(TAG, "📞 startCall: senderId=$senderId recipientId=$recipientId")
+        Log.d(TAG, " startCall: senderId=$senderId recipientId=$recipientId")
+        if (recipientId != null) {
+            session(recipientId).voiceActive = true
+        }
         voiceStream.startSending(senderId = senderId, recipientId = recipientId)
     }
 
@@ -166,6 +257,8 @@ class RTCConnectionManager(
         Log.d(TAG, "stopCall: stopping voice/video streams")
         voiceStream.stop()
         videoStream.stop()
+        sessionsByPeer.clear()
+        negotiatedVideoParamsByPeer.clear()
     }
 
     /**
@@ -177,6 +270,10 @@ class RTCConnectionManager(
         recipientId: String?,
         onDecodedFrame: ((DecodedVideoFrame) -> Unit)? = null
     ) {
+        if (recipientId != null) {
+            session(recipientId).videoActive = true
+        }
+
         videoStream.setOnFrameDecodedCallback(onDecodedFrame)
 
         val ctx = context
@@ -185,12 +282,24 @@ class RTCConnectionManager(
             return
         }
 
+        // Apply negotiated params to encoder if provided.
+        if (recipientId != null) {
+            negotiatedVideoParamsByPeer[recipientId]?.let { vp ->
+                try { videoStream.updateSendConfig(vp) } catch (_: Exception) {}
+            }
+        }
+
         videoStream.startCamera(context = ctx, lifecycleOwner = lifecycleOwner, recipientId = recipientId)
         Log.d(TAG, "🎥 startVideo(camera): recipientId=$recipientId")
     }
 
     fun stopVideo() {
         videoStream.stop()
+        // If called without a peer, clear all video sessions.
+        sessionsByPeer.values.forEach { it.videoActive = false }
+        // Remove idle.
+        sessionsByPeer.keys.toList().forEach { cleanupSessionIfIdle(it) }
+        negotiatedVideoParamsByPeer.clear()
     }
 
     /**
@@ -266,33 +375,36 @@ class RTCConnectionManager(
     fun startOutgoingVideoCall(
         peerId: String,
         lifecycleOwner: LifecycleOwner? = null,
-        mode: RTCSync.Mode = RTCSync.Mode.TWO_WAY
+        mode: RTCSync.Mode = RTCSync.Mode.TWO_WAY,
+        videoParams: RTCSync.VideoParams? = null
     ) {
+        session(peerId).videoActive = true
+
+        // Persist desired params as negotiated starting point.
+        if (videoParams != null) {
+            negotiatedVideoParamsByPeer[peerId] = videoParams
+        }
+
         val ms = meshServiceRef
         if (ms == null) {
             Log.w(TAG, "startOutgoingVideoCall: no mesh service attached")
             return
         }
 
-        // Send invite first
         try {
             ms.sendRTCSync(
                 recipientPeerID = peerId,
                 syncType = RTCSync.SyncType.INVITE,
                 callType = RTCSync.CallType.VIDEO,
-                mode = mode
+                mode = mode,
+                videoParams = videoParams
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send VIDEO INVITE to $peerId: ${e.message}")
         }
 
-        // IMPORTANT: Do NOT start camera here.
-        // Camera start should be triggered after the ACCEPT boundary:
-        // - ONE_WAY: inviter starts only after receiving ACCEPT.
-        // - TWO_WAY: inviter starts after receiving ACCEPT; invitee starts after sending ACCEPT.
         Log.d(TAG, "startOutgoingVideoCall: invite sent; camera start deferred to ACCEPT event")
 
-        // lifecycleOwner kept for API compatibility; unused intentionally.
         @Suppress("UNUSED_VARIABLE")
         val _unused = lifecycleOwner
     }
