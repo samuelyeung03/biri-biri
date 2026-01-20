@@ -237,20 +237,27 @@ class MainActivity : OrientationAwareActivity() {
 
                 // If a video call is active/requested, show the full-screen call UI.
                 if (peerId != null) {
-                    // Send INVITE when entering the call screen, but don't start camera here.
-                    LaunchedEffect(peerId) {
-                        try {
-                            meshService.rtcConnectionManager.startOutgoingVideoCall(
-                                peerId = peerId,
-                                lifecycleOwner = null,
-                                mode = com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY
-                            )
-                        } catch (_: Exception) {
+                    val outgoingMode by chatViewModel.outgoingVideoCallMode.observeAsState(com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY)
+                    val shouldStartLocalVideo = chatViewModel.shouldStartLocalVideo.observeAsState(false)
+                    val shouldSendInvite = chatViewModel.shouldSendVideoInvite.observeAsState(false)
+
+                    // Initiator path: send INVITE exactly once when user started /videocall.
+                    LaunchedEffect(peerId, outgoingMode, shouldSendInvite.value) {
+                        if (peerId != null && shouldSendInvite.value) {
+                            try {
+                                meshService.rtcConnectionManager.startOutgoingVideoCall(
+                                    peerId = peerId,
+                                    lifecycleOwner = null,
+                                    mode = outgoingMode
+                                )
+                            } catch (_: Exception) {
+                            } finally {
+                                try { chatViewModel.consumeShouldSendVideoInvite() } catch (_: Exception) {}
+                            }
                         }
                     }
 
                     // Start local camera only after ACCEPT boundary.
-                    val shouldStartLocalVideo = chatViewModel.shouldStartLocalVideo.observeAsState(false)
                     LaunchedEffect(peerId, shouldStartLocalVideo.value) {
                         if (peerId != null && shouldStartLocalVideo.value) {
                             try {

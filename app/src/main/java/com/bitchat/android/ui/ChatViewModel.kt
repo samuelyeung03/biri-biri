@@ -88,6 +88,9 @@ class ChatViewModel(
         privateChatManager,
         onVideoCallRequested = { peerId ->
             _videoCallPeerId.postValue(peerId)
+        },
+        onVideoCallModeRequested = { mode ->
+            setOutgoingVideoCallMode(mode)
         }
     )
 
@@ -175,6 +178,31 @@ class ChatViewModel(
         _shouldStartLocalVideo.postValue(false)
     }
 
+    // Outgoing video call selection (set by /videocall). Default to TWO_WAY.
+    private val _outgoingVideoCallMode = androidx.lifecycle.MutableLiveData(com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY)
+    val outgoingVideoCallMode: androidx.lifecycle.LiveData<com.bitchat.android.rtc.RTCSync.Mode> = _outgoingVideoCallMode
+
+    fun setOutgoingVideoCallMode(mode: com.bitchat.android.rtc.RTCSync.Mode) {
+        _outgoingVideoCallMode.postValue(mode)
+        // Outgoing /videocall selects initiator role.
+        _videoCallRole.postValue(VideoCallRole.INITIATOR)
+        // Trigger INVITE send when UI opens.
+        _shouldSendVideoInvite.postValue(true)
+    }
+
+    enum class VideoCallRole { INITIATOR, CALLEE }
+
+    private val _videoCallRole = androidx.lifecycle.MutableLiveData<VideoCallRole?>(null)
+    val videoCallRole: androidx.lifecycle.LiveData<VideoCallRole?> = _videoCallRole
+
+    // One-shot flag: only initiator should send INVITE when entering the call screen.
+    private val _shouldSendVideoInvite = androidx.lifecycle.MutableLiveData(false)
+    val shouldSendVideoInvite: androidx.lifecycle.LiveData<Boolean> = _shouldSendVideoInvite
+
+    fun consumeShouldSendVideoInvite() {
+        _shouldSendVideoInvite.postValue(false)
+    }
+
     init {
         // Note: Mesh service delegate is now set by MainActivity
         loadAndInitialize()
@@ -193,16 +221,15 @@ class ChatViewModel(
                 when (evt) {
                     is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Invite -> {
                         if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
-                            // Incoming video invite:
-                            // - always open call UI
-                            // - mark this side as the callee (incoming)
-                            // - store mode so we can decide when to start camera
+                            // Incoming call => callee role.
+                            _videoCallRole.postValue(VideoCallRole.CALLEE)
+                            _shouldSendVideoInvite.postValue(false)
+
                             activeVideoCallMode = evt.mode
                             activeVideoCallIsOutgoing = false
                             setVideoCallPeerId(evt.fromPeerId)
 
                             // TWO_WAY: callee starts sending after sending ACCEPT.
-                            // Note: RTCConnectionManager sends ACCEPT immediately for VIDEO invites.
                             if (evt.mode == com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY) {
                                 _shouldStartLocalVideo.postValue(true)
                             }
@@ -223,6 +250,8 @@ class ChatViewModel(
 
                     is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Hangup -> {
                         if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
+                            _videoCallRole.postValue(null)
+                            _shouldSendVideoInvite.postValue(false)
                             activeVideoCallMode = null
                             activeVideoCallIsOutgoing = false
                             _shouldStartLocalVideo.postValue(false)
@@ -259,7 +288,7 @@ class ChatViewModel(
         // Load nickname
         val nickname = dataManager.loadNickname()
         state.setNickname(nickname)
-        
+
         // Load data
         val (joinedChannels, protectedChannels) = channelManager.loadChannelData()
         state.setJoinedChannels(joinedChannels)
@@ -283,7 +312,7 @@ class ChatViewModel(
         // Log all favorites at startup
         dataManager.logAllFavorites()
         logCurrentFavoriteState()
-        
+
         // Initialize session state monitoring
         initializeSessionStateMonitoring()
 

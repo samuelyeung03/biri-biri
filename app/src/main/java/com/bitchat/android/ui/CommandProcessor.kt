@@ -19,7 +19,8 @@ class CommandProcessor(
     private val messageManager: MessageManager,
     private val channelManager: ChannelManager,
     private val privateChatManager: PrivateChatManager,
-    private val onVideoCallRequested: ((peerId: String) -> Unit)? = null
+    private val onVideoCallRequested: ((peerId: String) -> Unit)? = null,
+    private val onVideoCallModeRequested: ((mode: com.bitchat.android.rtc.RTCSync.Mode) -> Unit)? = null
 ) {
     //user for ping
     private val scope = CoroutineScope(Dispatchers.Main)
@@ -551,6 +552,7 @@ class CommandProcessor(
         messageManager.addMessage(systemMessage)
 
         // Notify UI to navigate to the video call screen.
+        onVideoCallModeRequested?.invoke(mode)
         onVideoCallRequested?.invoke(peerID)
 
         // Start call-control (invite). Camera start will be handled by UI later when it passes a LifecycleOwner.
