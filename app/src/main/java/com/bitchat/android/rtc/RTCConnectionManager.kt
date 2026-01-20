@@ -98,9 +98,9 @@ class RTCConnectionManager(
                 Log.d(TAG, "📨 Received RTC_INVITE from $fromPeerId callType=${sync.callType} mode=${sync.mode}")
                 onCallControlEvent?.invoke(CallControlEvent.Invite(fromPeerId, sync.callType, sync.mode))
 
-                if (sync.mode == RTCSync.Mode.TWO_WAY) {
-                    when (sync.callType) {
-                        RTCSync.CallType.VOICE -> {
+                when (sync.callType) {
+                    RTCSync.CallType.VOICE -> {
+                        if (sync.mode == RTCSync.Mode.TWO_WAY) {
                             startCall(senderId = meshServiceRef?.myPeerID ?: "", recipientId = fromPeerId)
                             // Let the inviter know we're ready
                             meshServiceRef?.sendRTCSync(
@@ -109,34 +109,29 @@ class RTCConnectionManager(
                                 callType = sync.callType,
                                 mode = sync.mode
                             )
-                        }
-
-                        RTCSync.CallType.VIDEO -> {
-                            // We still ACK/ACCEPT the invite so the remote caller can proceed with their send pipeline,
-                            // but we don't start CameraX capture here because CameraX requires a LifecycleOwner and
-                            // RTCConnectionManager is intentionally UI-agnostic.
-                            //
-                            // The intended flow is:
-                            // 1) We emit CallControlEvent.Invite(fromPeerId, VIDEO, mode)
-                            // 2) The UI / higher-level coordinator decides whether to accept and, if so, calls:
-                            //      startVideo(lifecycleOwner, recipientId = fromPeerId)
-                            //    (and later wires rendering)
-                            // 3) Regardless, we send RTC_ACCEPT here to keep the handshake consistent.
-                            Log.w(
-                                TAG,
-                                "Received VIDEO invite from $fromPeerId; camera start deferred until a LifecycleOwner is provided"
-                            )
-
-                            meshServiceRef?.sendRTCSync(
-                                recipientPeerID = fromPeerId,
-                                syncType = RTCSync.SyncType.ACCEPT,
-                                callType = sync.callType,
-                                mode = sync.mode
-                            )
+                        } else {
+                            Log.d(TAG, "Received one-way RTC_INVITE from $fromPeerId (no auto-answer)")
                         }
                     }
-                } else {
-                    Log.d(TAG, "Received one-way RTC_INVITE from $fromPeerId (no auto-answer)")
+
+                    RTCSync.CallType.VIDEO -> {
+                        // VIDEO handshake rule (per desired behavior):
+                        // - Always send ACCEPT on receiving an INVITE (both ONE_WAY and TWO_WAY)
+                        // - UI decides when to start camera/streaming
+                        //   * ONE_WAY: only inviter starts after receiving ACCEPT
+                        //   * TWO_WAY: both sides start after ACCEPT boundary
+                        Log.w(
+                            TAG,
+                            "Received VIDEO invite from $fromPeerId; sending ACCEPT and deferring camera start to UI"
+                        )
+
+                        meshServiceRef?.sendRTCSync(
+                            recipientPeerID = fromPeerId,
+                            syncType = RTCSync.SyncType.ACCEPT,
+                            callType = sync.callType,
+                            mode = sync.mode
+                        )
+                    }
                 }
             }
 
@@ -291,11 +286,14 @@ class RTCConnectionManager(
             Log.e(TAG, "Failed to send VIDEO INVITE to $peerId: ${e.message}")
         }
 
-        // Start local capture if possible
-        if (lifecycleOwner != null) {
-            startVideo(lifecycleOwner = lifecycleOwner, recipientId = peerId, onDecodedFrame = null)
-        } else {
-            Log.d(TAG, "startOutgoingVideoCall: lifecycleOwner not provided; camera start deferred")
-        }
+        // IMPORTANT: Do NOT start camera here.
+        // Camera start should be triggered after the ACCEPT boundary:
+        // - ONE_WAY: inviter starts only after receiving ACCEPT.
+        // - TWO_WAY: inviter starts after receiving ACCEPT; invitee starts after sending ACCEPT.
+        Log.d(TAG, "startOutgoingVideoCall: invite sent; camera start deferred to ACCEPT event")
+
+        // lifecycleOwner kept for API compatibility; unused intentionally.
+        @Suppress("UNUSED_VARIABLE")
+        val _unused = lifecycleOwner
     }
 }

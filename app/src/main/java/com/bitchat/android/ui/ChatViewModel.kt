@@ -162,6 +162,19 @@ class ChatViewModel(
     val teleportedGeo: LiveData<Set<String>> = state.teleportedGeo
     val geohashParticipantCounts: LiveData<Map<String, Int>> = state.geohashParticipantCounts
 
+    // Track current video-call handshake state.
+    // This is intentionally small and UI-driven: it controls when MainActivity should start camera.
+    private var activeVideoCallMode: com.bitchat.android.rtc.RTCSync.Mode? = null
+    private var activeVideoCallIsOutgoing: Boolean = false
+
+    // Exposed to UI: MainActivity observes this to start local camera after ACCEPT boundary.
+    private val _shouldStartLocalVideo = androidx.lifecycle.MutableLiveData(false)
+    val shouldStartLocalVideo: androidx.lifecycle.LiveData<Boolean> = _shouldStartLocalVideo
+
+    fun consumeShouldStartLocalVideo() {
+        _shouldStartLocalVideo.postValue(false)
+    }
+
     init {
         // Note: Mesh service delegate is now set by MainActivity
         loadAndInitialize()
@@ -180,13 +193,39 @@ class ChatViewModel(
                 when (evt) {
                     is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Invite -> {
                         if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
-                            // Auto-open call UI for incoming video invite.
+                            // Incoming video invite:
+                            // - always open call UI
+                            // - mark this side as the callee (incoming)
+                            // - store mode so we can decide when to start camera
+                            activeVideoCallMode = evt.mode
+                            activeVideoCallIsOutgoing = false
                             setVideoCallPeerId(evt.fromPeerId)
+
+                            // TWO_WAY: callee starts sending after sending ACCEPT.
+                            // Note: RTCConnectionManager sends ACCEPT immediately for VIDEO invites.
+                            if (evt.mode == com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY) {
+                                _shouldStartLocalVideo.postValue(true)
+                            }
+                        }
+                    }
+
+                    is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Accept -> {
+                        if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
+                            // Outgoing video call accepted by remote:
+                            // - always open call UI (if not already)
+                            // - inviter starts sending after receiving ACCEPT (both modes)
+                            activeVideoCallMode = evt.mode
+                            activeVideoCallIsOutgoing = true
+                            setVideoCallPeerId(evt.fromPeerId)
+                            _shouldStartLocalVideo.postValue(true)
                         }
                     }
 
                     is com.bitchat.android.rtc.RTCConnectionManager.CallControlEvent.Hangup -> {
                         if (evt.callType == com.bitchat.android.rtc.RTCSync.CallType.VIDEO) {
+                            activeVideoCallMode = null
+                            activeVideoCallIsOutgoing = false
+                            _shouldStartLocalVideo.postValue(false)
                             // Close call UI when remote hangs up.
                             clearVideoCallPeerId()
                         }
@@ -199,6 +238,16 @@ class ChatViewModel(
             }
         } catch (_: Exception) {
         }
+    }
+
+    /**
+     * Call this when *user initiates* an outgoing video call.
+     * The INVITE is sent immediately, but camera only starts after ACCEPT.
+     */
+    fun beginOutgoingVideoCall(peerId: String, mode: com.bitchat.android.rtc.RTCSync.Mode) {
+        activeVideoCallMode = mode
+        activeVideoCallIsOutgoing = true
+        setVideoCallPeerId(peerId)
     }
 
     fun cancelMediaSend(messageId: String) {

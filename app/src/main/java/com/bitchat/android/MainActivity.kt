@@ -237,17 +237,32 @@ class MainActivity : OrientationAwareActivity() {
 
                 // If a video call is active/requested, show the full-screen call UI.
                 if (peerId != null) {
-                    // Start outgoing video call pipeline when entering the call screen:
-                    // - sends RTC_INVITE(VIDEO)
-                    // - starts local camera capture using the Activity as LifecycleOwner
+                    // Send INVITE when entering the call screen, but don't start camera here.
                     LaunchedEffect(peerId) {
                         try {
                             meshService.rtcConnectionManager.startOutgoingVideoCall(
                                 peerId = peerId,
-                                lifecycleOwner = this@MainActivity,
+                                lifecycleOwner = null,
                                 mode = com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY
                             )
                         } catch (_: Exception) {
+                        }
+                    }
+
+                    // Start local camera only after ACCEPT boundary.
+                    val shouldStartLocalVideo = chatViewModel.shouldStartLocalVideo.observeAsState(false)
+                    LaunchedEffect(peerId, shouldStartLocalVideo.value) {
+                        if (peerId != null && shouldStartLocalVideo.value) {
+                            try {
+                                meshService.rtcConnectionManager.startVideo(
+                                    lifecycleOwner = this@MainActivity,
+                                    recipientId = peerId,
+                                    onDecodedFrame = null
+                                )
+                            } catch (_: Exception) {
+                            } finally {
+                                try { chatViewModel.consumeShouldStartLocalVideo() } catch (_: Exception) {}
+                            }
                         }
                     }
 
