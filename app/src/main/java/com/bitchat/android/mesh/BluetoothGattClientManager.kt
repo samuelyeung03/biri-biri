@@ -18,6 +18,8 @@ import java.util.*
 import kotlinx.coroutines.Job
 import com.bitchat.android.ui.debug.DebugSettingsManager
 import com.bitchat.android.ui.debug.DebugScanResult
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 
 /**
  * Manages GATT client operations, scanning, and client-side connections
@@ -30,17 +32,54 @@ class BluetoothGattClientManager(
     private val powerManager: PowerManager,
     private val delegate: BluetoothConnectionManagerDelegate?
 ) {
-    
+
     companion object {
         private const val TAG = "BluetoothGattClientManager"
     }
-    
+
     // Core Bluetooth components
     private val bluetoothManager: BluetoothManager = 
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
     private val bleScanner: BluetoothLeScanner? = bluetoothAdapter?.bluetoothLeScanner
     
+    // Per-device flow control for GATT writes.
+    // Android BLE supports one in-flight write per BluetoothGatt. We expose an await
+    // so the sender can serialize writes per device.
+    private val writePermits = mutableMapOf<String, Semaphore>()
+    private val writePermitsLock = Mutex()
+
+    suspend fun awaitWritePermit(deviceAddress: String) {
+        val permit = writePermitsLock.lock().let {
+            try {
+                // Start in "available" state for new devices.
+                writePermits.getOrPut(deviceAddress) { Semaphore(1) }
+            } finally {
+                writePermitsLock.unlock()
+            }
+        }
+        permit.acquire()
+    }
+
+    private suspend fun releaseWritePermit(deviceAddress: String) {
+        writePermitsLock.lock()
+        try {
+            // If missing (e.g. disconnect cleanup), ignore.
+            writePermits[deviceAddress]?.release()
+        } finally {
+            writePermitsLock.unlock()
+        }
+    }
+
+    private suspend fun removeWritePermit(deviceAddress: String) {
+        writePermitsLock.lock()
+        try {
+            writePermits.remove(deviceAddress)
+        } finally {
+            writePermitsLock.unlock()
+        }
+    }
+
     /**
      * Public: Connect to a device by MAC address (for debug UI)
      */
@@ -421,7 +460,16 @@ class BluetoothGattClientManager(
                         "Client: Characteristic write failed to $deviceAddress, status: $status"
                     )
                 }
+
+                // Release flow-control permit regardless of success/failure.
+                connectionScope.launch {
+                    try {
+                        releaseWritePermit(deviceAddress)
+                    } catch (_: Exception) {
+                    }
+                }
             }
+
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 Log.d(TAG, "Client: Connection state change - Device: $deviceAddress, Status: $status, NewState: $newState")
 
@@ -442,6 +490,11 @@ class BluetoothGattClientManager(
                     } else {
                         Log.d(TAG, "Client: Cleanly disconnected from $deviceAddress")
                         connectionTracker.cleanupDeviceConnection(deviceAddress)
+                    }
+
+                    // On disconnect, drop permit state to avoid leaking.
+                    connectionScope.launch {
+                        try { removeWritePermit(deviceAddress) } catch (_: Exception) {}
                     }
 
                     // Notify higher layers about device disconnection to update direct flags

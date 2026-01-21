@@ -121,6 +121,13 @@ class BluetoothPacketBroadcaster(
         }
     }
     
+    // Optional flow control hook for client writes (GATT writeCharacteristic)
+    private var clientWriteAwaiter: (suspend (deviceAddress: String) -> Unit)? = null
+
+    fun setClientWriteAwaiter(awaiter: suspend (deviceAddress: String) -> Unit) {
+        clientWriteAwaiter = awaiter
+    }
+
     fun broadcastPacket(
         routed: RoutedPacket,
         gattServer: BluetoothGattServer?,
@@ -152,22 +159,56 @@ class BluetoothPacketBroadcaster(
                 if (transferId != null) {
                     TransferProgressManager.start(transferId, fragments.size)
                 }
+
                 val job = connectionScope.launch {
-                    var sent = 0
-                    fragments.forEach { fragment ->
+                    // For client connections (we are the GATT client writing to remote server),
+                    // we must respect Android's 1-in-flight-write flow control.
+                    // Serialize per device: each device gets its own sequential fragment send.
+
+                    val subscribedDevices = connectionTracker.getSubscribedDevices()
+                    val connectedDevices = connectionTracker.getConnectedDevices().values
+                        .filter { it.isClient && it.gatt != null && it.characteristic != null }
+
+                    // 1) Server-side notifications: best-effort (no write callback). Keep existing behavior.
+                    subscribedDevices.forEach { device ->
                         if (!isActive) return@launch
-                        // If cancelled, stop sending remaining fragments
                         if (transferId != null && transferJobs[transferId]?.isCancelled == true) return@launch
-                        broadcastSinglePacket(RoutedPacket(fragment, transferId = transferId), gattServer, characteristic)
-                        // 20ms delay between fragments
-                        //delay(20)
-                        if (transferId != null) {
-                            sent += 1
-                            TransferProgressManager.progress(transferId, sent, fragments.size)
-                            if (sent == fragments.size) TransferProgressManager.complete(transferId, fragments.size)
+                        fragments.forEach { fragment ->
+                            if (!isActive) return@launch
+                            if (transferId != null && transferJobs[transferId]?.isCancelled == true) return@launch
+                            broadcastSinglePacket(RoutedPacket(fragment, transferId = transferId), gattServer, characteristic)
                         }
                     }
+
+                    // 2) Client-side writes: sequential per device with await.
+                    val awaiter = clientWriteAwaiter
+                    connectedDevices.forEach { deviceConn ->
+                        if (!isActive) return@launch
+                        if (transferId != null && transferJobs[transferId]?.isCancelled == true) return@launch
+
+                        fragments.forEach { fragment ->
+                            if (!isActive) return@launch
+                            if (transferId != null && transferJobs[transferId]?.isCancelled == true) return@launch
+
+                            // Wait until previous write completes for this device (if available).
+                            if (awaiter != null) {
+                                try {
+                                    awaiter(deviceConn.device.address)
+                                } catch (_: Exception) {
+                                    // If await fails, fall through and attempt write; broadcaster write call may fail.
+                                }
+                            }
+
+                            broadcastSinglePacket(RoutedPacket(fragment, transferId = transferId), gattServer, characteristic)
+                        }
+                    }
+
+                    if (transferId != null) {
+                        // We treat progress as fragments produced/scheduled (same behavior as before).
+                        TransferProgressManager.complete(transferId, fragments.size)
+                    }
                 }
+
                 if (transferId != null) {
                     transferJobs[transferId] = job
                     job.invokeOnCompletion { transferJobs.remove(transferId) }
@@ -452,4 +493,3 @@ class BluetoothPacketBroadcaster(
         Log.d(TAG, "BluetoothPacketBroadcaster shutdown complete")
     }
 }
-

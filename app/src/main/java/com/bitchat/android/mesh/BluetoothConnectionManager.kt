@@ -91,6 +91,15 @@ class BluetoothConnectionManager(
     
     init {
         powerManager.delegate = this
+
+        // Wire client write flow control into broadcaster (best-effort).
+        try {
+            packetBroadcaster.setClientWriteAwaiter { deviceAddress ->
+                clientManager.awaitWritePermit(deviceAddress)
+            }
+        } catch (_: Exception) {
+        }
+
         // Observe debug settings to enforce role state while active
         try {
             val dbg = com.bitchat.android.ui.debug.DebugSettingsManager.getInstance()
