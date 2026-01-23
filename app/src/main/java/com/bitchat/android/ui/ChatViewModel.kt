@@ -77,7 +77,8 @@ class ChatViewModel(
     }
 
     fun clearVideoCallPeerId() {
-        _videoCallPeerId.value = null
+        // RTC callbacks can arrive off the main thread; use postValue for thread-safety.
+        _videoCallPeerId.postValue(null)
     }
 
     // Replace CommandProcessor creation to inject video call callback
@@ -255,6 +256,10 @@ class ChatViewModel(
                             activeVideoCallMode = null
                             activeVideoCallIsOutgoing = false
                             _shouldStartLocalVideo.postValue(false)
+
+                            // Ensure full teardown on remote hangup too.
+                            runCatching { meshService.rtcConnectionManager.endVideoCall(evt.fromPeerId) }
+
                             // Close call UI when remote hangs up.
                             clearVideoCallPeerId()
                         }

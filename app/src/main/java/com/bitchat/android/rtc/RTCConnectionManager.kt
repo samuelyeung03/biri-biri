@@ -408,4 +408,16 @@ class RTCConnectionManager(
         @Suppress("UNUSED_VARIABLE")
         val _unused = lifecycleOwner
     }
+
+    /**
+     * Unified teardown for a video call with [peerId].
+     *
+     * This should be called for both local hangup (user pressed hang up) and remote hangup
+     * (received RTC_HANGUP) to ensure we always stop the camera/encoder and release rendering.
+     */
+    fun endVideoCall(peerId: String) {
+        runCatching { stopVideoCallWithPeer(peerId) }
+        runCatching { clearRemoteVideoSurface() }
+        negotiatedVideoParamsByPeer.remove(peerId)
+    }
 }

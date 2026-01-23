@@ -277,8 +277,8 @@ class MainActivity : OrientationAwareActivity() {
                         modifier = modifier,
                         onHangUp = {
                             try {
-                                // Stop local streams.
-                                meshService.rtcConnectionManager.stopVideo()
+                                // Full teardown: stop camera/encoder + release remote surface decoder.
+                                meshService.rtcConnectionManager.endVideoCall(peerId)
                             } catch (_: Exception) {
                             }
 

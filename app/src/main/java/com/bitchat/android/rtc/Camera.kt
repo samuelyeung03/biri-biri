@@ -33,6 +33,11 @@ class Camera(
         lifecycleOwner: LifecycleOwner,
         onFrame: (ImageProxy) -> Unit
     ) {
+        // Ensure we have a live executor (it may have been shutdown in stopCamera).
+        if (cameraExecutor.isShutdown) {
+            cameraExecutor = Executors.newSingleThreadExecutor()
+        }
+
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
         cameraProviderFuture.addListener({
@@ -88,10 +93,26 @@ class Camera(
     }
 
     fun stopCamera() {
-        cameraProvider?.unbindAll()
+        // Stop frame delivery first.
+        try {
+            imageAnalysis?.clearAnalyzer()
+        } catch (_: Exception) {
+        }
+
+        try {
+            cameraProvider?.unbindAll()
+        } catch (_: Exception) {
+        }
+
+        imageAnalysis = null
+        cameraProvider = null
         lastDeliveredTsNs = 0L
-        cameraExecutor.shutdown()
-        cameraExecutor = Executors.newSingleThreadExecutor()
+
+        // Shutdown analyzer thread.
+        try {
+            cameraExecutor.shutdown()
+        } catch (_: Exception) {
+        }
     }
 
     companion object {
