@@ -42,6 +42,8 @@ class Camera(
                 .setResolutionStrategy(
                     ResolutionStrategy(
                         Size(width, height),
+                        // Prefer higher resolutions for device compatibility; the encoder will downscale
+                        // to (width,height) before feeding MediaCodec.
                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                     )
                 )

@@ -19,11 +19,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.Job
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.channels.actor
-import java.util.UUID
+import kotlinx.coroutines.Job
 
 /**
  * Handles packet broadcasting to connected devices using actor pattern for serialization
@@ -95,32 +92,18 @@ class BluetoothPacketBroadcaster(
         }
     }
     
-    // Data class to hold broadcast request information
-    private data class BroadcastRequest(
-        val routed: RoutedPacket,
-        val gattServer: BluetoothGattServer?,
-        val characteristic: BluetoothGattCharacteristic?
-    )
-    
-    // Actor scope for the broadcaster
+    // Coroutine scope for aux jobs (e.g., transfer fragmentation job tracking)
     private val broadcasterScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val transferJobs = ConcurrentHashMap<String, Job>()
-    
-    // SERIALIZATION: Actor to serialize all broadcast operations
-    @OptIn(kotlinx.coroutines.ObsoleteCoroutinesApi::class)
-    private val broadcasterActor = broadcasterScope.actor<BroadcastRequest>(
-        capacity = Channel.UNLIMITED
-    ) {
-        Log.d(TAG, "🎭 Created packet broadcaster actor")
-        try {
-            for (request in channel) {
-                broadcastSinglePacketInternal(request.routed, request.gattServer, request.characteristic)
-            }
-        } finally {
-            Log.d(TAG, "🎭 Packet broadcaster actor terminated")
+
+    // Central scheduler: all outbound sends funnel through here.
+    private val scheduler = BluetoothBroadcasterScheduler(
+        scope = connectionScope,
+        sender = { routed, gattServer, characteristic ->
+            broadcastSinglePacketInternal(routed, gattServer, characteristic)
         }
-    }
-    
+    )
+
     // Optional flow control hook for client writes (GATT writeCharacteristic)
     private var clientWriteAwaiter: (suspend (deviceAddress: String) -> Unit)? = null
 
@@ -300,26 +283,17 @@ class BluetoothPacketBroadcaster(
 
     
     /**
-     * Public entry point for broadcasting - submits request to actor for serialization
+     * Public entry point for broadcasting - submits request to scheduler for serialization
      */
     fun broadcastSinglePacket(
         routed: RoutedPacket,
         gattServer: BluetoothGattServer?,
         characteristic: BluetoothGattCharacteristic?
     ) {
-        if (routed.packet.type.toInt() == 17){
+        if (routed.packet.type.toInt() == 17) {
             debugManager?.measureRTT(0)
         }
-        // Submit broadcast request to actor for serialized processing
-        broadcasterScope.launch {
-            try {
-                broadcasterActor.send(BroadcastRequest(routed, gattServer, characteristic))
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to send broadcast request to actor: ${e.message}")
-                // Fallback to direct processing if actor fails
-                broadcastSinglePacketInternal(routed, gattServer, characteristic)
-            }
-        }
+        scheduler.schedule(routed, gattServer, characteristic)
     }
     
     /**
@@ -473,23 +447,17 @@ class BluetoothPacketBroadcaster(
         return buildString {
             appendLine("=== Packet Broadcaster Debug Info ===")
             appendLine("Broadcaster Scope Active: ${broadcasterScope.isActive}")
-            appendLine("Actor Channel Closed: ${broadcasterActor.isClosedForSend}")
             appendLine("Connection Scope Active: ${connectionScope.isActive}")
         }
     }
-    
+
     /**
      * Shutdown the broadcaster actor gracefully
      */
     fun shutdown() {
-        Log.d(TAG, "Shutting down BluetoothPacketBroadcaster actor")
-        
-        // Close the actor gracefully
-        broadcasterActor.close()
-        
-        // Cancel the broadcaster scope
+        Log.d(TAG, "Shutting down BluetoothPacketBroadcaster")
+        scheduler.shutdown()
         broadcasterScope.cancel()
-        
         Log.d(TAG, "BluetoothPacketBroadcaster shutdown complete")
     }
 }

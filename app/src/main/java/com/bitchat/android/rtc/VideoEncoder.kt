@@ -8,7 +8,6 @@ import android.media.MediaFormat
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import com.bitchat.android.util.AppConstants
-import java.nio.ByteBuffer
 
 /**
  * Encodes video frames using MediaCodec (H.264/AVC).
@@ -30,6 +29,11 @@ class VideoEncoder(
 
     // Latest codec config (e.g., VPS/SPS/PPS for HEVC). Some decoders need this in-band.
     private var lastCodecConfig: ByteArray? = null
+
+    // Scratch buffers reused across frames to avoid per-frame allocations.
+    private var scratchY: ByteArray? = null
+    private var scratchU: ByteArray? = null
+    private var scratchV: ByteArray? = null
 
     init {
         setupCodec()
@@ -114,11 +118,48 @@ class VideoEncoder(
                 return
             }
 
-            val inputFrame: ByteArray = when (selectedColorFormat) {
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> yuv420888ToI420(image)
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> yuv420888ToNV12(image)
-                else -> yuv420888ToNV12(image)
+            val srcW = image.width
+            val srcH = image.height
+
+            // IMPORTANT: always feed MediaCodec frames that match encoder config (width,height).
+            val dstW = width
+            val dstH = height
+
+            val expectedTightYuv420Dst = ((dstW * dstH * 3) + 1) / 2
+
+            val needsScale = srcW != dstW || srcH != dstH
+
+            val inputFrame: ByteArray = if (!needsScale) {
+                // Sizes already match: keep existing conversion path.
+                when (selectedColorFormat) {
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> yuv420888ToI420(image)
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> yuv420888ToNV12(image)
+                    else -> yuv420888ToNV12(image)
+                }
+            } else {
+                val (yDown, uDown, vDown) = downsampleToI420Planes(image, dstW, dstH)
+                // Scaled path: build a frame that matches the encoder size.
+                when (selectedColorFormat) {
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> buildI420Frame(dstW, dstH, yDown, uDown, vDown)
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> buildNV12Frame(dstW, dstH, yDown, uDown, vDown)
+                    else -> buildNV12Frame(dstW, dstH, yDown, uDown, vDown)
+                }
+            }
+
+            if (inputFrame.size != expectedTightYuv420Dst) {
+                Log.e(
+                    TAG,
+                    "BUG: scaled/converted frame size mismatch. got=${inputFrame.size} expected=$expectedTightYuv420Dst " +
+                        "src=${srcW}x${srcH} dst=${dstW}x${dstH} color=$selectedColorFormat"
+                )
+                return
+            }
+
+            // Diagnostic: show source vs encoder size.
+            if (Log.isLoggable(TAG, Log.DEBUG)) {
+                Log.d(TAG, "encode: src=${srcW}x${srcH} -> encoder=${dstW}x${dstH} bytes=${inputFrame.size}")
             }
 
             val inputBufferIndex = codec.dequeueInputBuffer(timeoutUs)
@@ -129,18 +170,16 @@ class VideoEncoder(
                 } else {
                     inputBuffer.clear()
 
-                    // Guard: avoid BufferOverflowException.
                     if (inputBuffer.capacity() < inputFrame.size) {
                         Log.e(
                             TAG,
-                            "Encoder input buffer too small (cap=${inputBuffer.capacity()} < frame=${inputFrame.size}). Dropping frame. color=$selectedColorFormat ${width}x${height}"
+                            "Encoder input buffer too small (cap=${inputBuffer.capacity()} < frame=${inputFrame.size}). " +
+                                "Dropping frame. color=$selectedColorFormat image=${srcW}x${srcH} encoder=${dstW}x${dstH}"
                         )
-                        codec.queueInputBuffer(inputBufferIndex, 0, 0, 0L, 0)
                         return
                     }
 
                     inputBuffer.put(inputFrame)
-
                     val ptsUs = image.imageInfo.timestamp / 1000L
                     codec.queueInputBuffer(inputBufferIndex, 0, inputFrame.size, ptsUs, 0)
                 }
@@ -198,12 +237,16 @@ class VideoEncoder(
         val w = image.width
         val h = image.height
 
+        // Tight size for I420 = width*height*3/2, rounded for odd products.
+        val out = ByteArray(((w * h * 3) + 1) / 2)
+        var outOffset = 0
+
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
 
-        val out = ByteArray(w * h + (w * h) / 2)
-        var outOffset = 0
+        val chromaW = w / 2
+        val chromaH = h / 2
 
         // Copy Y
         outOffset = copyPlane(
@@ -216,11 +259,7 @@ class VideoEncoder(
             outputOffset = outOffset
         )
 
-        // Many devices deliver chroma in either UV or VU order. ImageProxy gives explicit U and V planes,
-        // so we can copy U then V as I420 expects.
-        val chromaW = w / 2
-        val chromaH = h / 2
-
+        // Copy U then V as I420 expects.
         outOffset = copyPlane(
             buffer = uPlane.buffer,
             rowStride = uPlane.rowStride,
@@ -252,11 +291,14 @@ class VideoEncoder(
         val w = image.width
         val h = image.height
 
+        val out = ByteArray(((w * h * 3) + 1) / 2)
+
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
 
-        val out = ByteArray(w * h + (w * h) / 2)
+        val chromaW = w / 2
+        val chromaH = h / 2
 
         // Y
         var outOffset = 0
@@ -271,9 +313,6 @@ class VideoEncoder(
         )
 
         // UV interleaved
-        val chromaW = w / 2
-        val chromaH = h / 2
-
         val uRowStride = uPlane.rowStride
         val vRowStride = vPlane.rowStride
         val uPixelStride = uPlane.pixelStride
@@ -282,7 +321,6 @@ class VideoEncoder(
         val uBuf = uPlane.buffer.duplicate().apply { rewind() }
         val vBuf = vPlane.buffer.duplicate().apply { rewind() }
 
-        // For each chroma sample, write U then V (NV12)
         for (r in 0 until chromaH) {
             val uRowStart = r * uRowStride
             val vRowStart = r * vRowStride
@@ -335,6 +373,114 @@ class VideoEncoder(
         }
 
         return outPos
+    }
+
+    private fun ensureScratch(dstW: Int, dstH: Int) {
+        val ySize = dstW * dstH
+        val cSize = (dstW / 2) * (dstH / 2)
+
+        if (scratchY?.size != ySize) scratchY = ByteArray(ySize)
+        if (scratchU?.size != cSize) scratchU = ByteArray(cSize)
+        if (scratchV?.size != cSize) scratchV = ByteArray(cSize)
+    }
+
+    private fun clampIndex(v: Int, maxExclusive: Int): Int {
+        return when {
+            v < 0 -> 0
+            v >= maxExclusive -> maxExclusive - 1
+            else -> v
+        }
+    }
+
+    /**
+     * Downsample planes from [image] (YUV_420_888) into tightly-packed I420 planes at (dstW,dstH).
+     * Uses nearest-neighbor scaling.
+     */
+    private fun downsampleToI420Planes(image: ImageProxy, dstW: Int, dstH: Int): Triple<ByteArray, ByteArray, ByteArray> {
+        ensureScratch(dstW, dstH)
+        val outY = scratchY!!
+        val outU = scratchU!!
+        val outV = scratchV!!
+
+        val srcW = image.width
+        val srcH = image.height
+
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+
+        val yBuf = yPlane.buffer.duplicate().apply { rewind() }
+        val uBuf = uPlane.buffer.duplicate().apply { rewind() }
+        val vBuf = vPlane.buffer.duplicate().apply { rewind() }
+
+        val yRowStride = yPlane.rowStride
+        val yPixStride = yPlane.pixelStride
+
+        val uRowStride = uPlane.rowStride
+        val uPixStride = uPlane.pixelStride
+        val vRowStride = vPlane.rowStride
+        val vPixStride = vPlane.pixelStride
+
+        // ---- Y (full res) ----
+        for (dy in 0 until dstH) {
+            val sy = clampIndex(dy * srcH / dstH, srcH)
+            val yRowStart = sy * yRowStride
+            val outRowStart = dy * dstW
+            for (dx in 0 until dstW) {
+                val sx = clampIndex(dx * srcW / dstW, srcW)
+                val inIndex = yRowStart + sx * yPixStride
+                outY[outRowStart + dx] = yBuf.get(inIndex)
+            }
+        }
+
+        // ---- UV (half res) ----
+        val srcCW = srcW / 2
+        val srcCH = srcH / 2
+        val dstCW = dstW / 2
+        val dstCH = dstH / 2
+
+        // NOTE: We assume the common CameraX layout where planes[1] is U and planes[2] is V.
+        // (If a device swaps them, colors will be wrong but size will still be correct.)
+        for (dy in 0 until dstCH) {
+            val sy = clampIndex(dy * srcCH / dstCH, srcCH)
+            val uRowStart = sy * uRowStride
+            val vRowStart = sy * vRowStride
+            val outRowStart = dy * dstCW
+            for (dx in 0 until dstCW) {
+                val sx = clampIndex(dx * srcCW / dstCW, srcCW)
+                val uIndex = uRowStart + sx * uPixStride
+                val vIndex = vRowStart + sx * vPixStride
+                outU[outRowStart + dx] = uBuf.get(uIndex)
+                outV[outRowStart + dx] = vBuf.get(vIndex)
+            }
+        }
+
+        return Triple(outY, outU, outV)
+    }
+
+    private fun buildI420Frame(dstW: Int, dstH: Int, y: ByteArray, u: ByteArray, v: ByteArray): ByteArray {
+        val out = ByteArray(((dstW * dstH * 3) + 1) / 2)
+        var off = 0
+        System.arraycopy(y, 0, out, off, y.size)
+        off += y.size
+        System.arraycopy(u, 0, out, off, u.size)
+        off += u.size
+        System.arraycopy(v, 0, out, off, v.size)
+        return out
+    }
+
+    private fun buildNV12Frame(dstW: Int, dstH: Int, y: ByteArray, u: ByteArray, v: ByteArray): ByteArray {
+        val out = ByteArray(((dstW * dstH * 3) + 1) / 2)
+        var off = 0
+        System.arraycopy(y, 0, out, off, y.size)
+        off += y.size
+
+        // Interleave U,V
+        for (i in u.indices) {
+            out[off++] = u[i]
+            out[off++] = v[i]
+        }
+        return out
     }
 
     fun release() {
