@@ -335,6 +335,8 @@ class RTCConnectionManager(
 
         val surfaceDecoder = remoteSurfaceDecoder ?: return
         if (seq == 0) {
+            // seq=0 is reserved for codec config. IMPORTANT: strip the 2-byte seq header.
+            Log.d(TAG, "🎞️ Remote codec config received: seq=0 payloadBytes=${payload.size} configBytes=${data.size}")
             surfaceDecoder.setCodecConfig(data)
             return
         }

@@ -49,6 +49,13 @@ class MediaCodecVideoDecoder(
     private var cachedCodecConfig: ByteArray? = null
     private var hasProducedOutput: Boolean = false
 
+    // Debug counters/state
+    private var inFrames: Long = 0
+    private var outFrames: Long = 0
+    private var droppedNoCodec: Long = 0
+    private var noInputBuffer: Long = 0
+    private var lastLogMs: Long = 0
+
     init {
         setupCodec()
     }
@@ -79,8 +86,16 @@ class MediaCodecVideoDecoder(
         presentationTimeUs: Long,
         onFrameDecoded: ((DecodedVideoFrame) -> Unit)?
     ) {
-        val c = codec ?: return
+        val c = codec
+        if (c == null) {
+            if (Log.isLoggable(TAG, Log.WARN)) {
+                Log.w(TAG, "decode: codec not ready; dropping frame bytes=${encoded.size}")
+            }
+            return
+        }
         if (encoded.isEmpty()) return
+
+        inFrames++
 
         try {
             // Heuristic: seq=0 packets are sent as codec config from the sender (see VideoStream).
@@ -99,8 +114,15 @@ class MediaCodecVideoDecoder(
                 return
             }
 
-            // Some devices require VPS/SPS/PPS (or SPS/PPS) to be prepended in-band.
             val config = cachedCodecConfig
+            if (!hasProducedOutput && config == null) {
+                // Likely failure mode: never received SPS/PPS.
+                droppedNoCodec++
+                maybeLogStats(reason = "drop_no_codec", ptsUs = presentationTimeUs)
+                return
+            }
+
+            // Some devices require VPS/SPS/PPS (or SPS/PPS) to be prepended in-band.
             val accessUnit: ByteArray = if (!hasProducedOutput && config != null) {
                 // Prepend once until decoder starts producing output.
                 ByteArray(config.size + encoded.size).also { merged ->
@@ -118,13 +140,27 @@ class MediaCodecVideoDecoder(
             val inputIndex = c.dequeueInputBuffer(timeoutUs)
             if (inputIndex >= 0) {
                 val inBuf = c.getInputBuffer(inputIndex)
-                inBuf?.clear()
-                inBuf?.put(accessUnit)
-                c.queueInputBuffer(inputIndex, 0, accessUnit.size, presentationTimeUs, 0)
+                if (inBuf == null) {
+                    Log.w(TAG, "decode: input buffer null (idx=$inputIndex)")
+                } else {
+                    inBuf.clear()
+                    inBuf.put(accessUnit)
+                    c.queueInputBuffer(inputIndex, 0, accessUnit.size, presentationTimeUs, 0)
+                }
+            } else {
+                noInputBuffer++
+                maybeLogStats(reason = "no_input_buffer", ptsUs = presentationTimeUs)
             }
 
             val bufferInfo = MediaCodec.BufferInfo()
             var outIndex = c.dequeueOutputBuffer(bufferInfo, timeoutUs)
+
+            if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                val fmt = runCatching { c.outputFormat }.getOrNull()
+                Log.d(TAG, "Decoder output format changed: ${fmt ?: "(null)"}")
+                outIndex = c.dequeueOutputBuffer(bufferInfo, timeoutUs)
+            }
+
             while (outIndex >= 0) {
                 val outBuf = c.getOutputBuffer(outIndex)
                 if (outBuf != null && bufferInfo.size > 0) {
@@ -135,6 +171,7 @@ class MediaCodecVideoDecoder(
                     outBuf.get(outData)
 
                     hasProducedOutput = true
+                    outFrames++
 
                     if (Log.isLoggable(TAG, Log.DEBUG)) {
                         Log.d(TAG, "decoded output bytes=${outData.size} flags=${bufferInfo.flags} ptsUs=${bufferInfo.presentationTimeUs}")
@@ -152,9 +189,26 @@ class MediaCodecVideoDecoder(
                 c.releaseOutputBuffer(outIndex, false)
                 outIndex = c.dequeueOutputBuffer(bufferInfo, 0)
             }
+
+            // Periodic stats when decode produces no output.
+            if (!hasProducedOutput) {
+                maybeLogStats(reason = "no_output_yet", ptsUs = presentationTimeUs)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Decode error ($codecType): ${e.message}", e)
         }
+    }
+
+    private fun maybeLogStats(reason: String, ptsUs: Long) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastLogMs < 2000) return
+        lastLogMs = now
+        Log.d(
+            TAG,
+            "stats[$reason]: inFrames=$inFrames outFrames=$outFrames hasOutput=$hasProducedOutput " +
+                "cachedConfig=${cachedCodecConfig?.size ?: 0} droppedNoCodec=$droppedNoCodec " +
+                "noInput=$noInputBuffer ptsUs=$ptsUs"
+        )
     }
 
     override fun release() {
