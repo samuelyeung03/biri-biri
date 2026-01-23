@@ -97,6 +97,9 @@ class BluetoothConnectionManager(
             packetBroadcaster.setClientWriteAwaiter { deviceAddress ->
                 clientManager.awaitWritePermit(deviceAddress)
             }
+            packetBroadcaster.setClientWriteWithoutResponseIssuer { deviceAddress ->
+                clientManager.noteWriteWithoutResponseIssued(deviceAddress)
+            }
         } catch (_: Exception) {
         }
 

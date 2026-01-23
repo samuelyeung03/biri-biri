@@ -20,6 +20,7 @@ import com.bitchat.android.ui.debug.DebugSettingsManager
 import com.bitchat.android.ui.debug.DebugScanResult
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
 
 /**
  * Manages GATT client operations, scanning, and client-side connections
@@ -35,6 +36,9 @@ class BluetoothGattClientManager(
 
     companion object {
         private const val TAG = "BluetoothGattClientManager"
+        private const val WRITE_BURST_LIMIT = 10
+        private const val WRITE_BURST_TIMEOUT_MS = 3000L
+        private const val WNR_AUTO_RELEASE_DELAY_MS = 80L
     }
 
     // Core Bluetooth components
@@ -44,27 +48,53 @@ class BluetoothGattClientManager(
     private val bleScanner: BluetoothLeScanner? = bluetoothAdapter?.bluetoothLeScanner
     
     // Per-device flow control for GATT writes.
-    // Android BLE supports one in-flight write per BluetoothGatt. We expose an await
-    // so the sender can serialize writes per device.
+    // Android BLE supports one in-flight write per BluetoothGatt, but in practice some stacks
+    // may not deliver onCharacteristicWrite for WRITE_NO_RESPONSE.
+    // We implement a burst-based gate to avoid deadlocks:
+    // - allow up to WRITE_BURST_LIMIT outstanding "permits" per device
+    // - if unavailable for WRITE_BURST_TIMEOUT_MS, timeout and proceed (best-effort)
     private val writePermits = mutableMapOf<String, Semaphore>()
     private val writePermitsLock = Mutex()
 
-    suspend fun awaitWritePermit(deviceAddress: String) {
-        val permit = writePermitsLock.lock().let {
+    private suspend fun getPermit(deviceAddress: String): Semaphore {
+        writePermitsLock.lock()
+        try {
+            return writePermits.getOrPut(deviceAddress) { Semaphore(WRITE_BURST_LIMIT) }
+        } finally {
+            writePermitsLock.unlock()
+        }
+    }
+
+    suspend fun awaitWritePermit(deviceAddress: String): Boolean {
+        val permit = getPermit(deviceAddress)
+        return try {
+            withTimeout(WRITE_BURST_TIMEOUT_MS) {
+                permit.acquire()
+                true
+            }
+        } catch (_: Exception) {
+            Log.w(TAG, "awaitWritePermit timeout for $deviceAddress after ${WRITE_BURST_TIMEOUT_MS}ms")
+            false
+        }
+    }
+
+    /**
+     * For WRITE_NO_RESPONSE we may never get onCharacteristicWrite().
+     * Call this after issuing the write to prevent the permit pool from draining permanently.
+     */
+    fun noteWriteWithoutResponseIssued(deviceAddress: String) {
+        connectionScope.launch {
+            delay(WNR_AUTO_RELEASE_DELAY_MS)
             try {
-                // Start in "available" state for new devices.
-                writePermits.getOrPut(deviceAddress) { Semaphore(1) }
-            } finally {
-                writePermitsLock.unlock()
+                releaseWritePermit(deviceAddress)
+            } catch (_: Exception) {
             }
         }
-        permit.acquire()
     }
 
     private suspend fun releaseWritePermit(deviceAddress: String) {
         writePermitsLock.lock()
         try {
-            // If missing (e.g. disconnect cleanup), ignore.
             writePermits[deviceAddress]?.release()
         } finally {
             writePermitsLock.unlock()
