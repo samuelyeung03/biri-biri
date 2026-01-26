@@ -92,13 +92,16 @@ class BluetoothConnectionManager(
     init {
         powerManager.delegate = this
 
-        // Wire client write flow control into broadcaster (best-effort).
+        // Wire client write flow control + completion callbacks into broadcaster.
         try {
             packetBroadcaster.setClientWriteAwaiter { deviceAddress ->
                 clientManager.awaitWritePermit(deviceAddress)
             }
             packetBroadcaster.setClientWriteWithoutResponseIssuer { deviceAddress ->
                 clientManager.noteWriteWithoutResponseIssued(deviceAddress)
+            }
+            clientManager.setOnClientWriteCallback { deviceAddress, status ->
+                packetBroadcaster.onClientWriteComplete(deviceAddress, status)
             }
         } catch (_: Exception) {
         }

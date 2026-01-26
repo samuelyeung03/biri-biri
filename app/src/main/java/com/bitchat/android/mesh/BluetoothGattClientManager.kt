@@ -21,6 +21,7 @@ import com.bitchat.android.ui.debug.DebugScanResult
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Manages GATT client operations, scanning, and client-side connections
@@ -36,9 +37,19 @@ class BluetoothGattClientManager(
 
     companion object {
         private const val TAG = "BluetoothGattClientManager"
-        private const val WRITE_BURST_LIMIT = 10
-        private const val WRITE_BURST_TIMEOUT_MS = 3000L
-        private const val WNR_AUTO_RELEASE_DELAY_MS = 80L
+        // NOTICE:
+        // We allow a small in-flight burst window (see scheduler) and use callbacks to actively drain.
+        private const val WRITE_BURST_LIMIT = 8
+        private const val WRITE_BURST_TIMEOUT_MS = 20L
+        private const val WNR_AUTO_RELEASE_DELAY_MS = 10L
+    }
+
+    // Optional callback to notify higher layers that a write completed.
+    // status == BluetoothGatt.GATT_SUCCESS means success, otherwise failure.
+    private var onClientWriteCallback: ((deviceAddress: String, status: Int) -> Unit)? = null
+
+    fun setOnClientWriteCallback(cb: ((deviceAddress: String, status: Int) -> Unit)?) {
+        onClientWriteCallback = cb
     }
 
     // Core Bluetooth components
@@ -70,6 +81,9 @@ class BluetoothGattClientManager(
         return try {
             withTimeout(WRITE_BURST_TIMEOUT_MS) {
                 permit.acquire()
+                try {
+                    Log.d(TAG, "awaitWritePermit acquired for $deviceAddress available=${permit.availablePermits}")
+                } catch (_: Exception) { }
                 true
             }
         } catch (_: Exception) {
@@ -81,21 +95,45 @@ class BluetoothGattClientManager(
     /**
      * For WRITE_NO_RESPONSE we may never get onCharacteristicWrite().
      * Call this after issuing the write to prevent the permit pool from draining permanently.
+     *
+     * Also: the broadcaster scheduler typically waits for a completion callback to drain
+     * the next queued packet. For WNR this callback may never arrive, so we send a
+     * best-effort synthetic completion after a short delay.
      */
     fun noteWriteWithoutResponseIssued(deviceAddress: String) {
         connectionScope.launch {
             delay(WNR_AUTO_RELEASE_DELAY_MS)
             try {
-                releaseWritePermit(deviceAddress)
+                releaseWritePermit(deviceAddress, reason = "WNR_AUTO")
+            } catch (_: Exception) {
+            }
+
+            // Best-effort: unblock scheduler drain when no callback will come.
+            // If onCharacteristicWrite() also fires, the semaphore release is capped and the
+            // broadcaster should handle duplicate completions safely.
+            try {
+                onClientWriteCallback?.invoke(deviceAddress, BluetoothGatt.GATT_SUCCESS)
             } catch (_: Exception) {
             }
         }
     }
 
-    private suspend fun releaseWritePermit(deviceAddress: String) {
+    private suspend fun releaseWritePermit(deviceAddress: String, reason: String = "UNKNOWN") {
         writePermitsLock.lock()
         try {
-            writePermits[deviceAddress]?.release()
+            val sem = writePermits[deviceAddress]
+            if (sem != null) {
+                // Don't let releases inflate the semaphore beyond the configured capacity.
+                // Both onCharacteristicWrite and WNR_AUTO can fire for nearby writes.
+                if (sem.availablePermits < WRITE_BURST_LIMIT) {
+                    sem.release()
+                }
+                try {
+                    Log.d(TAG, "releaseWritePermit($reason) for $deviceAddress available=${sem.availablePermits}")
+                } catch (_: Exception) { }
+            } else {
+                Log.d(TAG, "releaseWritePermit($reason) skipped; no semaphore for $deviceAddress")
+            }
         } finally {
             writePermitsLock.unlock()
         }
@@ -494,10 +532,13 @@ class BluetoothGattClientManager(
                 // Release flow-control permit regardless of success/failure.
                 connectionScope.launch {
                     try {
-                        releaseWritePermit(deviceAddress)
+                        releaseWritePermit(deviceAddress, reason = "onCharacteristicWrite")
                     } catch (_: Exception) {
                     }
                 }
+
+                // Notify the write completion to the registered callback
+                onClientWriteCallback?.invoke(deviceAddress, status)
             }
 
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {

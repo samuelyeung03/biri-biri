@@ -45,6 +45,13 @@ class BluetoothPacketBroadcaster(
     companion object {
         private const val TAG = "BluetoothPacketBroadcaster"
         private const val CLEANUP_DELAY = com.bitchat.android.util.AppConstants.Mesh.BROADCAST_CLEANUP_DELAY_MS
+
+        // Async failure (we got onCharacteristicWrite with non-success): small backoff.
+        private const val CLIENT_WRITE_RETRY_DELAY_MS = 10L
+
+        // Sync failure (writeCharacteristic() returned false): retry ASAP.
+        // This helps recover quickly when the stack momentarily rejects because it's busy.
+        private const val CLIENT_WRITE_SYNC_RETRY_DELAY_MS = 5L
     }
     // Optional nickname resolver injected by higher layer (peerID -> nickname?)
     private var nicknameResolver: ((String) -> String?)? = null
@@ -100,6 +107,43 @@ class BluetoothPacketBroadcaster(
             sendSingleToTargetInternal(targetAddress, routed, gattServer, characteristic)
         }
     )
+
+    // Track the most recent in-flight client write per device so we can retry on async GATT failure.
+    // This is best-effort: because we allow a small burst window, the same device may have multiple
+    // writes in flight. We keep a FIFO queue per device to preserve order.
+    private val inFlightClientWrites = ConcurrentHashMap<String, ArrayDeque<RoutedPacket>>()
+
+    private fun markClientWriteInFlight(deviceAddress: String, routed: RoutedPacket) {
+        val q = inFlightClientWrites.getOrPut(deviceAddress) { ArrayDeque() }
+        synchronized(q) { q.addLast(routed) }
+    }
+
+    private fun popClientWriteInFlight(deviceAddress: String): RoutedPacket? {
+        val q = inFlightClientWrites[deviceAddress] ?: return null
+        synchronized(q) {
+            val v = q.removeFirstOrNull()
+            if (q.isEmpty()) {
+                inFlightClientWrites.remove(deviceAddress)
+            }
+            return v
+        }
+    }
+
+    // Optional hook: GATT client manager can notify us when a write completes, so we can
+    // actively drain the scheduler (burst window).
+    fun onClientWriteComplete(deviceAddress: String, status: Int) {
+        // Always release one in-flight slot and drain.
+        scheduler.onClientWriteComplete(deviceAddress)
+
+        // Pop the completed/failed write from our in-flight FIFO.
+        val routed = popClientWriteInFlight(deviceAddress)
+
+        // If the write failed, retry quickly and do NOT drop.
+        if (status != android.bluetooth.BluetoothGatt.GATT_SUCCESS && routed != null) {
+            Log.w(TAG, "Client write failed (status=$status) -> retry in ${CLIENT_WRITE_RETRY_DELAY_MS}ms addr=$deviceAddress")
+            rescheduleClientWriteRetry(deviceAddress, routed)
+        }
+    }
 
     // Optional flow control hook for client writes (GATT writeCharacteristic)
     // Returns true if a permit was acquired, false if it timed out (best-effort).
@@ -259,12 +303,17 @@ class BluetoothPacketBroadcaster(
         val senderPeerID = routed.peerID ?: packet.senderID.toHexString()
         val senderNick = senderPeerID.let { pid -> nicknameResolver?.invoke(pid) }
 
-        // Prefer client writes (Write Without Response) if we have a client connection.
-        val clientTarget = connectionTracker.getConnectedDevices().values
-            .firstOrNull { connectionTracker.addressPeerMap[it.device.address] == targetPeerID && it.isClient && it.gatt != null && it.characteristic != null }
-        if (clientTarget != null) {
-            if (writeToDeviceConn(clientTarget, data)) {
-                logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, targetPeerID, clientTarget.device.address, packet.ttl)
+        // NOTICE: A peer may map to multiple device addresses. Pick the best *single* path.
+        val bestClientTarget = connectionTracker.getConnectedDevices().values
+            .asSequence()
+            .filter { connectionTracker.addressPeerMap[it.device.address] == targetPeerID }
+            .filter { it.isClient && it.gatt != null && it.characteristic != null }
+            .sortedByDescending { connectionTracker.getBestRSSI(it.device.address) ?: Int.MIN_VALUE }
+            .firstOrNull()
+
+        if (bestClientTarget != null) {
+            if (writeToDeviceConn(bestClientTarget, data)) {
+                logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, targetPeerID, bestClientTarget.device.address, packet.ttl)
                 if (transferId != null) {
                     TransferProgressManager.progress(transferId, 1, 1)
                     TransferProgressManager.complete(transferId, 1)
@@ -274,11 +323,15 @@ class BluetoothPacketBroadcaster(
         }
 
         // Only use server-side notify when we don't have a client connection.
-        val serverTarget = connectionTracker.getSubscribedDevices()
-            .firstOrNull { connectionTracker.addressPeerMap[it.address] == targetPeerID }
-        if (serverTarget != null) {
-            if (notifyDevice(serverTarget, data, gattServer, characteristic)) {
-                logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, targetPeerID, serverTarget.address, packet.ttl)
+        val bestServerTarget = connectionTracker.getSubscribedDevices()
+            .asSequence()
+            .filter { connectionTracker.addressPeerMap[it.address] == targetPeerID }
+            .sortedByDescending { connectionTracker.getBestRSSI(it.address) ?: Int.MIN_VALUE }
+            .firstOrNull()
+
+        if (bestServerTarget != null) {
+            if (notifyDevice(bestServerTarget, data, gattServer, characteristic)) {
+                logPacketRelay(typeName, senderPeerID, senderNick, incomingPeer, incomingAddr, targetPeerID, bestServerTarget.address, packet.ttl)
                 if (transferId != null) {
                     TransferProgressManager.progress(transferId, 1, 1)
                     TransferProgressManager.complete(transferId, 1)
@@ -345,14 +398,22 @@ class BluetoothPacketBroadcaster(
 
     private fun resolveTargetByPeerId(peerId: String): Target? {
         // Prefer client connection (write) over server subscription (notify).
+        // NOTICE: pick best RSSI when multiple addresses map to same peer.
         val client = connectionTracker.getConnectedDevices().values
-            .firstOrNull { connectionTracker.addressPeerMap[it.device.address] == peerId && it.isClient && it.gatt != null && it.characteristic != null }
+            .asSequence()
+            .filter { connectionTracker.addressPeerMap[it.device.address] == peerId }
+            .filter { it.isClient && it.gatt != null && it.characteristic != null }
+            .sortedByDescending { connectionTracker.getBestRSSI(it.device.address) ?: Int.MIN_VALUE }
+            .firstOrNull()
         if (client != null) {
             return Target(address = client.device.address, kind = Target.Kind.CLIENT_WRITE, deviceConn = client)
         }
 
         val server = connectionTracker.getSubscribedDevices()
-            .firstOrNull { connectionTracker.addressPeerMap[it.address] == peerId }
+            .asSequence()
+            .filter { connectionTracker.addressPeerMap[it.address] == peerId }
+            .sortedByDescending { connectionTracker.getBestRSSI(it.address) ?: Int.MIN_VALUE }
+            .firstOrNull()
         if (server != null) {
             return Target(address = server.address, kind = Target.Kind.SERVER_NOTIFY, device = server)
         }
@@ -361,57 +422,90 @@ class BluetoothPacketBroadcaster(
     }
 
     private fun resolveBroadcastTargets(excludeAddress: String?, senderId: String?): List<Target> {
-        val out = LinkedHashMap<String, Target>()
+        // NOTICE: Deduplicate by peerId so we only send once to each peer,
+        // even if that peer is reachable via multiple device addresses.
+        // Unknown peers (peerId == null) are deduped by address (safe fallback).
 
-        // 1) Client connections first (high priority path).
+        val chosenByPeer = LinkedHashMap<String, Target>()
+        val chosenByUnknownAddr = LinkedHashMap<String, Target>()
+
+        fun shouldSkip(addr: String): Boolean {
+            if (excludeAddress != null && addr == excludeAddress) return true
+            if (senderId != null && connectionTracker.addressPeerMap[addr] == senderId) return true
+            return false
+        }
+
+        fun maybeChoose(peerId: String?, candidate: Target) {
+            if (peerId == null) {
+                // Peer unknown: de-dupe only by address.
+                if (!chosenByUnknownAddr.containsKey(candidate.address)) {
+                    chosenByUnknownAddr[candidate.address] = candidate
+                }
+                return
+            }
+
+            val existing = chosenByPeer[peerId]
+            if (existing == null) {
+                chosenByPeer[peerId] = candidate
+                return
+            }
+
+            // Prefer client write over server notify.
+            if (existing.kind == Target.Kind.SERVER_NOTIFY && candidate.kind == Target.Kind.CLIENT_WRITE) {
+                chosenByPeer[peerId] = candidate
+                return
+            }
+            if (existing.kind == Target.Kind.CLIENT_WRITE && candidate.kind == Target.Kind.SERVER_NOTIFY) {
+                return
+            }
+
+            // Same kind: prefer higher RSSI if available.
+            val existingRssi = connectionTracker.getBestRSSI(existing.address) ?: Int.MIN_VALUE
+            val candRssi = connectionTracker.getBestRSSI(candidate.address) ?: Int.MIN_VALUE
+            if (candRssi > existingRssi) {
+                chosenByPeer[peerId] = candidate
+            }
+        }
+
+        // 1) Consider client connections first (high priority path).
         connectionTracker.getConnectedDevices().values
             .filter { it.isClient && it.gatt != null && it.characteristic != null }
             .forEach { dc ->
                 val addr = dc.device.address
-                if (excludeAddress != null && addr == excludeAddress) return@forEach
-                if (senderId != null && connectionTracker.addressPeerMap[addr] == senderId) return@forEach
-                out[addr] = Target(address = addr, kind = Target.Kind.CLIENT_WRITE, deviceConn = dc)
+                if (shouldSkip(addr)) return@forEach
+                val peerId = connectionTracker.addressPeerMap[addr]
+                maybeChoose(peerId, Target(address = addr, kind = Target.Kind.CLIENT_WRITE, deviceConn = dc))
             }
 
-        // 2) Subscribed devices (notify) only when we don't have a client connection.
+        // 2) Consider subscribed devices (notify) only when we don't have client connection for that peer.
         connectionTracker.getSubscribedDevices().forEach { d ->
             val addr = d.address
-            if (excludeAddress != null && addr == excludeAddress) return@forEach
-            if (senderId != null && connectionTracker.addressPeerMap[addr] == senderId) return@forEach
-            if (out.containsKey(addr)) return@forEach
-            out[addr] = Target(address = addr, kind = Target.Kind.SERVER_NOTIFY, device = d)
+            if (shouldSkip(addr)) return@forEach
+            val peerId = connectionTracker.addressPeerMap[addr]
+            maybeChoose(peerId, Target(address = addr, kind = Target.Kind.SERVER_NOTIFY, device = d))
         }
 
-        return out.values.toList()
+        // Combine deterministic: peers first (stable insertion), then unknown-by-address.
+        return chosenByPeer.values.toList() + chosenByUnknownAddr.values.toList()
     }
 
-    private fun scheduleToTarget(
-        target: Target,
-        routed: RoutedPacket,
-        gattServer: BluetoothGattServer?,
-        characteristic: BluetoothGattCharacteristic?
-    ) {
-        when (target.kind) {
-            Target.Kind.CLIENT_WRITE -> {
-                scheduler.schedule(
-                    targetAddress = target.address,
-                    priority = BluetoothBroadcasterScheduler.Priority.CLIENT_WRITE,
-                    routed = routed,
-                    gattServer = null,
-                    characteristic = null
-                )
-            }
+    private fun rescheduleClientWriteRetry(targetAddress: String, routed: RoutedPacket) {
+        // Default retry (async failure) uses a tiny backoff.
+        rescheduleClientWriteRetry(targetAddress, routed, CLIENT_WRITE_RETRY_DELAY_MS)
+    }
 
-            Target.Kind.SERVER_NOTIFY -> {
-                if (gattServer == null || characteristic == null) return
-                scheduler.schedule(
-                    targetAddress = target.address,
-                    priority = BluetoothBroadcasterScheduler.Priority.SERVER_NOTIFY,
-                    routed = routed,
-                    gattServer = gattServer,
-                    characteristic = characteristic
-                )
-            }
+    private fun rescheduleClientWriteRetry(targetAddress: String, routed: RoutedPacket, delayMs: Long) {
+        // Re-enqueue at the front. The scheduler is per-device serialized.
+        // This ensures we resend this packet before any other already-queued packets for the same address.
+        connectionScope.launch {
+            if (delayMs > 0) delay(delayMs)
+            scheduler.scheduleFront(
+                targetAddress = targetAddress,
+                priority = BluetoothBroadcasterScheduler.Priority.CLIENT_WRITE,
+                routed = routed,
+                gattServer = null,
+                characteristic = null
+            )
         }
     }
 
@@ -436,7 +530,25 @@ class BluetoothPacketBroadcaster(
             if (awaiter != null) {
                 try { awaiter(targetAddress) } catch (_: Exception) { }
             }
-            writeToDeviceConn(deviceConn, data)
+
+            // Mark in-flight BEFORE issuing the write so we can retry on async failure.
+            markClientWriteInFlight(targetAddress, routed)
+
+            val ok = writeToDeviceConn(deviceConn, data)
+            if (!ok) {
+                // Sync reject: remove in-flight marker (no callback will arrive) and retry ASAP.
+                // NOTE: We remove from the *front* only if this is the next expected completion.
+                val popped = popClientWriteInFlight(targetAddress)
+                if (popped == null || popped !== routed) {
+                    if (popped != null) {
+                        val q = inFlightClientWrites.getOrPut(targetAddress) { ArrayDeque() }
+                        synchronized(q) { q.addFirst(popped) }
+                    }
+                }
+
+                Log.d(TAG, "Retrying client write after ${CLIENT_WRITE_SYNC_RETRY_DELAY_MS}ms addr=$targetAddress")
+                rescheduleClientWriteRetry(targetAddress, routed, CLIENT_WRITE_SYNC_RETRY_DELAY_MS)
+            }
             return
         }
 
@@ -500,7 +612,16 @@ class BluetoothPacketBroadcaster(
                     false
                 }
 
-                if (result && useWnr) {
+                if (!result) {
+                    // IMPORTANT: We likely already consumed a permit (awaitWritePermit) before calling into here.
+                    // If the stack rejects the write (returns false), there will be no callback and no WNR
+                    // auto-release, so we must release the permit best-effort to avoid deadlocks.
+                    Log.w(TAG, "Client writeCharacteristic() returned false for ${deviceConn.device.address} writeType=${char.writeType}")
+                    try { clientWriteWithoutResponseIssuer?.invoke(deviceConn.device.address) } catch (_: Exception) {}
+                    return@let false
+                }
+
+                if (useWnr) {
                     // Some Android stacks don't deliver onCharacteristicWrite() for WNR.
                     // Notify the client manager so it can auto-release permits.
                     try { clientWriteWithoutResponseIssuer?.invoke(deviceConn.device.address) } catch (_: Exception) {}
@@ -537,5 +658,35 @@ class BluetoothPacketBroadcaster(
         scheduler.shutdown()
         broadcasterScope.cancel()
         Log.d(TAG, "BluetoothPacketBroadcaster shutdown complete")
+    }
+
+    private fun scheduleToTarget(
+        target: Target,
+        routed: RoutedPacket,
+        gattServer: BluetoothGattServer?,
+        characteristic: BluetoothGattCharacteristic?
+    ) {
+        when (target.kind) {
+            Target.Kind.CLIENT_WRITE -> {
+                scheduler.schedule(
+                    targetAddress = target.address,
+                    priority = BluetoothBroadcasterScheduler.Priority.CLIENT_WRITE,
+                    routed = routed,
+                    gattServer = null,
+                    characteristic = null
+                )
+            }
+
+            Target.Kind.SERVER_NOTIFY -> {
+                if (gattServer == null || characteristic == null) return
+                scheduler.schedule(
+                    targetAddress = target.address,
+                    priority = BluetoothBroadcasterScheduler.Priority.SERVER_NOTIFY,
+                    routed = routed,
+                    gattServer = gattServer,
+                    characteristic = characteristic
+                )
+            }
+        }
     }
 }
