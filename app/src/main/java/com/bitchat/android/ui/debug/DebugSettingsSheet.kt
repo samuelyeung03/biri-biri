@@ -42,6 +42,7 @@ fun DebugSettingsSheet(
     val verboseLogging by manager.verboseLoggingEnabled.collectAsState()
     val gattServerEnabled by manager.gattServerEnabled.collectAsState()
     val gattClientEnabled by manager.gattClientEnabled.collectAsState()
+    val autoConnectEnabled by manager.autoConnectEnabled.collectAsState()
     val packetRelayEnabled by manager.packetRelayEnabled.collectAsState()
     val maxOverall by manager.maxConnectionsOverall.collectAsState()
     val maxServer by manager.maxServerConnections.collectAsState()
@@ -166,6 +167,7 @@ fun DebugSettingsSheet(
                                 }
                             })
                         }
+
                         val clientCount = connectedDevices.count { it.connectionType == ConnectionType.GATT_CLIENT }
                         Text(stringResource(R.string.debug_connections_fmt, clientCount, maxClient), fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = colorScheme.onSurface.copy(alpha = 0.7f))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -190,6 +192,29 @@ fun DebugSettingsSheet(
                         }
                         Text(
                             stringResource(R.string.debug_roles_hint),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+
+            // Auto connect (separate section under Bluetooth roles)
+            item {
+                Surface(shape = RoundedCornerShape(12.dp), color = colorScheme.surfaceVariant.copy(alpha = 0.2f)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Filled.Bluetooth, contentDescription = null, tint = Color(0xFF007AFF))
+                            Text("auto connect", fontFamily = FontFamily.Monospace, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.weight(1f))
+                            Switch(
+                                checked = autoConnectEnabled,
+                                onCheckedChange = { manager.setAutoConnectEnabled(it) }
+                            )
+                        }
+                        Text(
+                            "Enable or disable automatically connecting to discovered BLE devices.",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             color = colorScheme.onSurface.copy(alpha = 0.7f)

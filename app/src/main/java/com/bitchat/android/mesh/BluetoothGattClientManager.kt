@@ -421,16 +421,14 @@ class BluetoothGattClientManager(
         val rssi = result.rssi
         val deviceAddress = device.address
         val scanRecord = result.scanRecord
-        
+
         // CRITICAL: Only process devices that have our service UUID
         val hasOurService = scanRecord?.serviceUuids?.any { it.uuid == AppConstants.Mesh.Gatt.SERVICE_UUID } == true
         if (!hasOurService) {
             return
         }
 
-        // Log.d(TAG, "Received scan result from $deviceAddress - already connected: ${connectionTracker.isDeviceConnected(deviceAddress)}")
-        
-        // Store RSSI from scan results for later use (especially for server connections)
+        // Store RSSI regardless so debug UI can show it
         connectionTracker.updateScanRSSI(deviceAddress, rssi)
 
         // Publish scan result to debug UI buffer
@@ -444,7 +442,13 @@ class BluetoothGattClientManager(
                 )
             )
         } catch (_: Exception) { }
-        
+
+        // If "Auto connect" is disabled, stop here (still keep scan results / RSSI).
+        val autoConnectEnabled = try { DebugSettingsManager.getInstance().autoConnectEnabled.value } catch (_: Exception) { true }
+        if (!autoConnectEnabled) {
+            return
+        }
+
         // Power-aware RSSI filtering
         if (rssi < powerManager.getRSSIThreshold()) {
             Log.d(TAG, "Skipping device $deviceAddress due to weak signal: $rssi < ${powerManager.getRSSIThreshold()}")
