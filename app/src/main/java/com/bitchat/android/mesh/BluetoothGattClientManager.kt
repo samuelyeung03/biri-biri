@@ -178,6 +178,9 @@ class BluetoothGattClientManager(
     // State management
     private var isActive = false
     
+    // If a scan-start was delayed due to rate limiting, keep a handle so we can cancel it.
+    private var delayedScanStartJob: Job? = null
+
     /**
      * Start client manager
      */
@@ -210,14 +213,14 @@ class BluetoothGattClientManager(
         }
         
         isActive = true
-        
+
         connectionScope.launch {
             if (powerManager.shouldUseDutyCycle()) {
                 Log.i(TAG, "Using power-aware duty cycling")
             } else {
                 startScanning()
             }
-            
+
             // Start RSSI monitoring
             startRSSIMonitoring()
         }
@@ -308,8 +311,13 @@ class BluetoothGattClientManager(
     private fun startScanning() {
         // Respect debug setting
         val enabled = try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance().gattClientEnabled.value } catch (_: Exception) { true }
-        if (!permissionManager.hasBluetoothPermissions() || bleScanner == null || !isActive || !enabled) return
-        
+        val autoScanEnabled = try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance().autoScanEnabled.value } catch (_: Exception) { true }
+        if (!permissionManager.hasBluetoothPermissions() || bleScanner == null || !isActive || !enabled || !autoScanEnabled) return
+
+        // Cancel any previous delayed starts; we're attempting a real start now.
+        delayedScanStartJob?.cancel()
+        delayedScanStartJob = null
+
         // Rate limit scan starts to prevent "scanning too frequently" errors
         val currentTime = System.currentTimeMillis()
         if (isCurrentlyScanning) {
@@ -321,11 +329,13 @@ class BluetoothGattClientManager(
         if (timeSinceLastStart < scanRateLimit) {
             val remainingWait = scanRateLimit - timeSinceLastStart
             Log.w(TAG, "Scan rate limited: need to wait ${remainingWait}ms before starting scan")
-            
-            // Schedule delayed scan start
-            connectionScope.launch {
+
+            // Schedule delayed scan start (cancelable)
+            delayedScanStartJob?.cancel()
+            delayedScanStartJob = connectionScope.launch {
                 delay(remainingWait)
-                if (isActive && !isCurrentlyScanning) {
+                val autoScanEnabledDelayed = try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance().autoScanEnabled.value } catch (_: Exception) { true }
+                if (isActive && !isCurrentlyScanning && autoScanEnabledDelayed) {
                     startScanning()
                 }
             }
@@ -357,7 +367,7 @@ class BluetoothGattClientManager(
                 Log.e(TAG, "Scan failed: $errorCode")
                 isCurrentlyScanning = false
                 lastScanStopTime = System.currentTimeMillis()
-                
+
                 when (errorCode) {
                     1 -> Log.e(TAG, "SCAN_FAILED_ALREADY_STARTED")
                     2 -> Log.e(TAG, "SCAN_FAILED_APPLICATION_REGISTRATION_FAILED") 
@@ -396,6 +406,10 @@ class BluetoothGattClientManager(
      */
     @Suppress("DEPRECATION")
     private fun stopScanning() {
+        // Always cancel scheduled delayed scan starts when we stop.
+        delayedScanStartJob?.cancel()
+        delayedScanStartJob = null
+
         if (!permissionManager.hasBluetoothPermissions() || bleScanner == null) return
         
         if (isCurrentlyScanning) {
@@ -705,12 +719,19 @@ class BluetoothGattClientManager(
     fun restartScanning() {
         // Respect debug setting
         val enabled = try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance().gattClientEnabled.value } catch (_: Exception) { true }
+        val autoScanEnabled = try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance().autoScanEnabled.value } catch (_: Exception) { true }
         if (!isActive || !enabled) return
-        
+
+        // If auto scan is disabled, make sure we stop and don't restart.
+        if (!autoScanEnabled) {
+            stopScanningForDebugToggle()
+            return
+        }
+
         connectionScope.launch {
             stopScanning()
             delay(1000) // Extra delay to avoid rate limiting
-            
+
             if (powerManager.shouldUseDutyCycle()) {
                 Log.i(TAG, "Switching to duty cycle scanning mode")
                 // Duty cycle will handle scanning
@@ -718,6 +739,20 @@ class BluetoothGattClientManager(
                 Log.i(TAG, "Switching to continuous scanning mode")
                 startScanning()
             }
+        }
+    }
+
+    /**
+     * Public: Immediately stop any active scanning (used when debug toggles disable auto scan).
+     * Safe to call even if not currently scanning.
+     */
+    fun stopScanningForDebugToggle() {
+        connectionScope.launch {
+            // Ensure any delayed scan restarts are cancelled too.
+            delayedScanStartJob?.cancel()
+            delayedScanStartJob = null
+
+            stopScanning()
         }
     }
 }

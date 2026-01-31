@@ -36,6 +36,9 @@ class DebugSettingsManager private constructor() {
     private val _autoConnectEnabled = MutableStateFlow(true)
     val autoConnectEnabled: StateFlow<Boolean> = _autoConnectEnabled.asStateFlow()
 
+    private val _autoScanEnabled = MutableStateFlow(true)
+    val autoScanEnabled: StateFlow<Boolean> = _autoScanEnabled.asStateFlow()
+
     private val _packetRelayEnabled = MutableStateFlow(true)
     val packetRelayEnabled: StateFlow<Boolean> = _packetRelayEnabled.asStateFlow()
 
@@ -54,6 +57,7 @@ class DebugSettingsManager private constructor() {
             _gattServerEnabled.value = DebugPreferenceManager.getGattServerEnabled(true)
             _gattClientEnabled.value = DebugPreferenceManager.getGattClientEnabled(true)
             _autoConnectEnabled.value = DebugPreferenceManager.getAutoConnectEnabled(true)
+            _autoScanEnabled.value = DebugPreferenceManager.getAutoScanEnabled(true)
             _packetRelayEnabled.value = DebugPreferenceManager.getPacketRelayEnabled(true)
             _maxConnectionsOverall.value = DebugPreferenceManager.getMaxConnectionsOverall(8)
             _maxServerConnections.value = DebugPreferenceManager.getMaxConnectionsServer(8)
@@ -142,6 +146,16 @@ class DebugSettingsManager private constructor() {
         addDebugMessage(
             DebugMessage.SystemMessage(
                 if (enabled) "🟢 Auto connect enabled" else "🔴 Auto connect disabled"
+            )
+        )
+    }
+
+    fun setAutoScanEnabled(enabled: Boolean) {
+        DebugPreferenceManager.setAutoScanEnabled(enabled)
+        _autoScanEnabled.value = enabled
+        addDebugMessage(
+            DebugMessage.SystemMessage(
+                if (enabled) "🟢 Auto scan enabled" else "🔴 Auto scan disabled"
             )
         )
     }

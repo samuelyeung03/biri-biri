@@ -109,6 +109,24 @@ class BluetoothConnectionManager(
         // Observe debug settings to enforce role state while active
         try {
             val dbg = com.bitchat.android.ui.debug.DebugSettingsManager.getInstance()
+
+            // Auto scan toggle: stop scans immediately when disabled, and resume scans when enabled
+            connectionScope.launch {
+                dbg.autoScanEnabled.collect { enabled ->
+                    if (!isActive) return@collect
+
+                    if (!enabled) {
+                        clientManager.stopScanningForDebugToggle()
+                    } else {
+                        // If client role is enabled, resume scanning according to power mode.
+                        val clientEnabled = dbg.gattClientEnabled.value
+                        if (clientEnabled) {
+                            clientManager.restartScanning()
+                        }
+                    }
+                }
+            }
+
             // Role enable/disable
             connectionScope.launch {
                 dbg.gattServerEnabled.collect { enabled ->

@@ -13,6 +13,7 @@ object DebugPreferenceManager {
     private const val KEY_GATT_SERVER = "gatt_server_enabled"
     private const val KEY_GATT_CLIENT = "gatt_client_enabled"
     private const val KEY_AUTO_CONNECT = "auto_connect_enabled"
+    private const val KEY_AUTO_SCAN = "auto_scan_enabled"
     private const val KEY_PACKET_RELAY = "packet_relay_enabled"
     private const val KEY_MAX_CONN_OVERALL = "max_connections_overall"
     private const val KEY_MAX_CONN_SERVER = "max_connections_server"
@@ -56,6 +57,13 @@ object DebugPreferenceManager {
 
     fun setAutoConnectEnabled(value: Boolean) {
         if (ready()) prefs.edit().putBoolean(KEY_AUTO_CONNECT, value).apply()
+    }
+
+    fun getAutoScanEnabled(default: Boolean = true): Boolean =
+        if (ready()) prefs.getBoolean(KEY_AUTO_SCAN, default) else default
+
+    fun setAutoScanEnabled(value: Boolean) {
+        if (ready()) prefs.edit().putBoolean(KEY_AUTO_SCAN, value).apply()
     }
 
     fun getPacketRelayEnabled(default: Boolean = true): Boolean =

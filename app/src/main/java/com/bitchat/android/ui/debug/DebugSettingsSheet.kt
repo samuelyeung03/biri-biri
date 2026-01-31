@@ -43,6 +43,7 @@ fun DebugSettingsSheet(
     val gattServerEnabled by manager.gattServerEnabled.collectAsState()
     val gattClientEnabled by manager.gattClientEnabled.collectAsState()
     val autoConnectEnabled by manager.autoConnectEnabled.collectAsState()
+    val autoScanEnabled by manager.autoScanEnabled.collectAsState()
     val packetRelayEnabled by manager.packetRelayEnabled.collectAsState()
     val maxOverall by manager.maxConnectionsOverall.collectAsState()
     val maxServer by manager.maxServerConnections.collectAsState()
@@ -213,8 +214,17 @@ fun DebugSettingsSheet(
                                 onCheckedChange = { manager.setAutoConnectEnabled(it) }
                             )
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Filled.Bluetooth, contentDescription = null, tint = Color(0xFF007AFF))
+                            Text("auto scan", fontFamily = FontFamily.Monospace, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.weight(1f))
+                            Switch(
+                                checked = autoScanEnabled,
+                                onCheckedChange = { manager.setAutoScanEnabled(it) }
+                            )
+                        }
                         Text(
-                            "Enable or disable automatically connecting to discovered BLE devices.",
+                            "Auto scan controls BLE discovery; auto connect controls connecting once a device is discovered.",
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             color = colorScheme.onSurface.copy(alpha = 0.7f)
