@@ -3,6 +3,8 @@ package com.bitchat.android.mesh
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattServer
 import android.util.Log
+import com.bitchat.android.model.FragmentPayload
+import com.bitchat.android.util.LatencyLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -116,6 +118,29 @@ class BluetoothBroadcasterScheduler(
                     // Dequeue now (optimistic). If send throws, we treat it as failure and requeue.
                     val next = if (q.high.isNotEmpty()) q.high.removeFirst() else q.low.removeFirst()
 
+                    // Latency: dequeued from scheduler (i.e., leaving the per-device send buffer).
+                    runCatching {
+                        val fp = FragmentPayload.decode(next.routed.packet.payload)
+                        if (fp != null) {
+                            LatencyLog.d(
+                                "sched_deq",
+                                "addr" to addr,
+                                "priority" to next.priority.name,
+                                "transferId" to next.routed.transferId,
+                                "fragId" to fp.getFragmentIDString(),
+                                "idx" to fp.index,
+                                "tot" to fp.total
+                            )
+                        } else {
+                            LatencyLog.d(
+                                "sched_deq",
+                                "addr" to addr,
+                                "priority" to next.priority.name,
+                                "transferId" to next.routed.transferId
+                            )
+                        }
+                    }
+
                     val now = System.currentTimeMillis()
                     val force = (q.high.size + q.low.size) >= LOG_LARGE_QUEUE_THRESHOLD
                     maybeLog(
@@ -194,6 +219,31 @@ class BluetoothBroadcasterScheduler(
                                 }
                                 enqueueActiveIfNeeded(cmd.req.targetAddress, q)
 
+                                // Latency: enqueued into scheduler (i.e., entering the per-device send buffer).
+                                runCatching {
+                                    val fp = FragmentPayload.decode(cmd.req.routed.packet.payload)
+                                    if (fp != null) {
+                                        LatencyLog.d(
+                                            "sched_enq",
+                                            "addr" to cmd.req.targetAddress,
+                                            "priority" to cmd.req.priority.name,
+                                            "atFront" to cmd.atFront,
+                                            "transferId" to cmd.req.routed.transferId,
+                                            "fragId" to fp.getFragmentIDString(),
+                                            "idx" to fp.index,
+                                            "tot" to fp.total
+                                        )
+                                    } else {
+                                        LatencyLog.d(
+                                            "sched_enq",
+                                            "addr" to cmd.req.targetAddress,
+                                            "priority" to cmd.req.priority.name,
+                                            "atFront" to cmd.atFront,
+                                            "transferId" to cmd.req.routed.transferId
+                                        )
+                                    }
+                                }
+
                                 val now = System.currentTimeMillis()
                                 val total = q.high.size + q.low.size
                                 val force = total >= LOG_LARGE_QUEUE_THRESHOLD
@@ -232,6 +282,32 @@ class BluetoothBroadcasterScheduler(
                             Priority.SERVER_NOTIFY -> if (cmd.atFront) q.low.addFirst(cmd.req) else q.low.addLast(cmd.req)
                         }
                         enqueueActiveIfNeeded(cmd.req.targetAddress, q)
+
+                        // Latency: enqueued into scheduler (idle path).
+                        runCatching {
+                            val fp = FragmentPayload.decode(cmd.req.routed.packet.payload)
+                            if (fp != null) {
+                                LatencyLog.d(
+                                    "sched_enq",
+                                    "addr" to cmd.req.targetAddress,
+                                    "priority" to cmd.req.priority.name,
+                                    "atFront" to cmd.atFront,
+                                    "transferId" to cmd.req.routed.transferId,
+                                    "fragId" to fp.getFragmentIDString(),
+                                    "idx" to fp.index,
+                                    "tot" to fp.total
+                                )
+                            } else {
+                                LatencyLog.d(
+                                    "sched_enq",
+                                    "addr" to cmd.req.targetAddress,
+                                    "priority" to cmd.req.priority.name,
+                                    "atFront" to cmd.atFront,
+                                    "transferId" to cmd.req.routed.transferId
+                                )
+                            }
+                        }
+
                         val now = System.currentTimeMillis()
                         val total = q.high.size + q.low.size
                         val force = total >= LOG_LARGE_QUEUE_THRESHOLD

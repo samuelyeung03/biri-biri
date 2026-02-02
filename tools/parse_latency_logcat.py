@@ -9,8 +9,10 @@ This script is intentionally tolerant: it ignores non-latency lines and lines mi
 
 Usage:
   python3 tools/parse_latency_logcat.py deviceA.log [deviceB.log ...]
+  python3 tools/parse_latency_logcat.py --dir tools/latency_logs/20260202_135901
 
 Output:
+  - Per-file inferred role (sender/receiver/relay)
   - Per-file event counts
   - Sender-side (fid) pipeline breakdown (cam_frame -> enc_out -> mesh_send_call)
   - Receiver-side (seq) pipeline breakdown (rx_video -> dec_in -> render_cb)
@@ -28,7 +30,7 @@ import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 
 def _to_int(v: Optional[str]) -> Optional[int]:
@@ -243,37 +245,242 @@ def analyze_fragments_by_id(events: List[Event]) -> None:
     print_stats("reasm_add(first) -> reasm_done", first_reasm_add_to_done)
 
 
+def analyze_fragment_queue_wait(events: List[Event]) -> None:
+    """Estimate sender-side queueing/backpressure before a fragment is sent over BLE.
+
+    We correlate per fragment using (fragId, idx):
+      - frag_emit: when the fragment becomes available to send
+      - ble_tx_call: when we actually invoke the BLE transmit call for that fragment
+
+    queue_delay = t(ble_tx_call) - t(frag_emit)
+
+    This is a proxy for time spent waiting in a sending buffer/queue.
+    We report a single aggregate stat (not per-idx) as requested.
+    """
+
+    # Build maps: (fragId, idx) -> earliest timestamp
+    emit_t: Dict[tuple[str, int], int] = {}
+    tx_t: Dict[tuple[str, int], int] = {}
+
+    for e in events:
+        if e.ev not in ("frag_emit", "ble_tx_call"):
+            continue
+        frag_id = e.get("fragId")
+        idx = e.geti("idx")
+        if frag_id is None or idx is None:
+            continue
+        key = (frag_id, idx)
+        if e.ev == "frag_emit":
+            prev = emit_t.get(key)
+            if prev is None or e.t < prev:
+                emit_t[key] = e.t
+        else:
+            prev = tx_t.get(key)
+            if prev is None or e.t < prev:
+                tx_t[key] = e.t
+
+    delays: List[int] = []
+    for key, t_emit in emit_t.items():
+        t_tx = tx_t.get(key)
+        if t_tx is None:
+            continue
+        d = t_tx - t_emit
+        if d >= 0:
+            delays.append(d)
+
+    if not delays:
+        return
+
+    print("Fragment send queue (frag_emit -> ble_tx_call, matched by fragId+idx):")
+    print_stats("emit -> ble_tx_call", delays)
+
+
+def analyze_scheduler_queue_delay(events: List[Event]) -> None:
+    """Compute how long packets/fragments waited inside BluetoothBroadcasterScheduler.
+
+    We match (addr, priority, transferId, fragId, idx) when available.
+    For non-fragment packets, we fall back to (addr, priority, transferId).
+
+    Metric: t(sched_deq) - t(sched_enq)
+    """
+
+    def _key(e: Event) -> Optional[tuple]:
+        addr = e.get("addr")
+        prio = e.get("priority")
+        transfer_id = e.get("transferId")
+        if addr is None or prio is None:
+            return None
+
+        frag_id = e.get("fragId")
+        idx = e.geti("idx")
+        if frag_id is not None and idx is not None:
+            return (addr, prio, transfer_id, frag_id, idx)
+
+        # Non-fragment / fallback
+        return (addr, prio, transfer_id)
+
+    enq: Dict[tuple, int] = {}
+    deq: Dict[tuple, int] = {}
+
+    for e in events:
+        if e.ev not in ("sched_enq", "sched_deq"):
+            continue
+        k = _key(e)
+        if k is None:
+            continue
+        if e.ev == "sched_enq":
+            prev = enq.get(k)
+            if prev is None or e.t < prev:
+                enq[k] = e.t
+        else:
+            prev = deq.get(k)
+            if prev is None or e.t < prev:
+                deq[k] = e.t
+
+    delays: List[int] = []
+    for k, t_enq in enq.items():
+        t_deq = deq.get(k)
+        if t_deq is None:
+            continue
+        d = t_deq - t_enq
+        if d >= 0:
+            delays.append(d)
+
+    if not delays:
+        return
+
+    print("Scheduler queue (sched_enq -> sched_deq):")
+    print_stats("enq -> deq", delays)
+
+
+def build_event_counts(events: List[Event]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for e in events:
+        counts[e.ev] = counts.get(e.ev, 0) + 1
+    return counts
+
+
+def infer_role(counts: Dict[str, int]) -> str:
+    """Infer a device role from which events exist.
+
+    Heuristic approach:
+      - sender: camera/encoder/send pipeline events seen (cam_frame/enc_out/video_payload/mesh_send_call)
+      - receiver: receive/decode/render pipeline events seen (rx_video/dec_in/render_cb)
+      - relay: has rx activities + forwarding, but lacks camera+render ends
+
+    If ambiguous, returns 'both' (sender+receiver) or 'unknown'.
+    """
+
+    sender_markers = {"cam_frame", "enc_out", "video_payload", "mesh_send_call", "tx_video"}
+    receiver_markers = {"rx_video", "dec_in", "render_cb"}
+
+    # Relay/forwarding markers (best-effort; tolerate mismatch across versions)
+    relay_markers = {
+        "relay_rx",
+        "relay_tx",
+        "mesh_relay",
+        "mesh_forward",
+        "forward_video",
+        "route_forward",
+        "sfwd",
+    }
+
+    sender_score = sum(counts.get(k, 0) for k in sender_markers)
+    receiver_score = sum(counts.get(k, 0) for k in receiver_markers)
+    relay_score = sum(counts.get(k, 0) for k in relay_markers)
+
+    has_sender = sender_score > 0
+    has_receiver = receiver_score > 0
+
+    if has_sender and has_receiver:
+        return "both"
+
+    if has_sender:
+        return "sender"
+
+    if has_receiver:
+        # If it receives and also forwards (or has explicit relay markers), call it relay.
+        # If it only receives, call it receiver.
+        if relay_score > 0 and not has_sender:
+            return "relay"
+        return "receiver"
+
+    # Fallback: if we see fragmentation/reassembly only, could be relay/receiver.
+    if any(k.startswith("reasm_") for k in counts.keys()) and any(k.startswith("frag_") for k in counts.keys()):
+        return "relay"
+
+    return "unknown"
+
+
+def iter_log_files(dir_path: Path, recursive: bool = False) -> List[Path]:
+    if not dir_path.exists() or not dir_path.is_dir():
+        return []
+    pattern = "**/*.log" if recursive else "*.log"
+    files = [p for p in dir_path.glob(pattern) if p.is_file()]
+    return sorted(files)
+
+
+def summarize_file(fp: Path) -> None:
+    events = parse_latency_lines(fp)
+    counts = build_event_counts(events)
+    role = infer_role(counts)
+
+    print(f"\n=== {fp} ===")
+    print(f"role: {role}")
+    print(f"events: {len(events)}")
+
+    analyze_sender_by_fid(events)
+    analyze_receiver_by_seq(events)
+    analyze_fragments_by_id(events)
+    analyze_scheduler_queue_delay(events)
+    analyze_fragment_queue_wait(events)
+
+
 def main(argv: List[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("logs", nargs="+", help="logcat dump files")
+    ap.add_argument("logs", nargs="*", help="logcat dump files")
+    ap.add_argument(
+        "--dir",
+        type=str,
+        default=None,
+        help="Scan a folder for *.log files (optionally a timestamp run folder).",
+    )
+    ap.add_argument(
+        "--recursive",
+        action="store_true",
+        help="When used with --dir, scan recursively for *.log.",
+    )
     args = ap.parse_args(argv)
 
-    for p in args.logs:
-        fp = Path(p)
+    files: List[Path] = []
+
+    if args.dir:
+        files.extend(iter_log_files(Path(args.dir), recursive=args.recursive))
+
+    if args.logs:
+        files.extend([Path(p) for p in args.logs])
+
+    # De-dup while preserving order
+    seen: set[Path] = set()
+    uniq: List[Path] = []
+    for f in files:
+        f_abs = f.resolve()
+        if f_abs in seen:
+            continue
+        seen.add(f_abs)
+        uniq.append(f)
+
+    if not uniq:
+        ap.error("No log files provided. Pass log paths or --dir <folder>.")
+
+    for fp in uniq:
         if not fp.exists():
             print(f"Missing file: {fp}")
             continue
-
-        events = parse_latency_lines(fp)
-        print(f"\n=== {fp} ===")
-        print(f"events: {len(events)}")
-
-        # Event counts
-        counts: Dict[str, int] = {}
-        for e in events:
-            counts[e.ev] = counts.get(e.ev, 0) + 1
-        top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        print("Top events:")
-        for ev, c in top[:20]:
-            print(f"  {ev}: {c}")
-
-        analyze_sender_by_fid(events)
-        analyze_receiver_by_seq(events)
-        analyze_fragments_by_id(events)
+        summarize_file(fp)
 
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

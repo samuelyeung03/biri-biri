@@ -11,20 +11,27 @@ Capture only `latency` lines from **every** connected adb device:
 ```
 
 Outputs:
-- `./latency_logs/<serial>.log`
+- `./tools/latency_logs/<timestamp>/<serial>.log`
 
 Stop capturing:
 - Press `Ctrl+C`
 
 ## 2) Parse captured logs
 
-Parse one or multiple log files:
+Parse a whole capture run folder (recommended):
 
 ```bash
-python3 ./tools/parse_latency_logcat.py ./latency_logs/*.log
+python3 ./tools/parse_latency_logcat.py --dir ./tools/latency_logs/<timestamp>
+```
+
+Or parse one or multiple log files:
+
+```bash
+python3 ./tools/parse_latency_logcat.py ./tools/latency_logs/<timestamp>/*.log
 ```
 
 The parser reports (per file):
+- inferred device role: `sender`, `receiver`, `relay`, `both`, or `unknown`
 - event counts
 - sender-side pipeline breakdown (grouped by `fid`): `cam_frame -> enc_out -> video_payload -> mesh_send_call`
 - receiver-side pipeline breakdown (grouped by `seq`): `rx_video -> dec_in -> render_cb`
