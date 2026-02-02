@@ -17,6 +17,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Job
+import com.bitchat.android.model.FragmentPayload
+import com.bitchat.android.util.LatencyLog
 
 /**
  * Handles packet broadcasting to connected devices using actor pattern for serialization
@@ -182,6 +184,18 @@ class BluetoothPacketBroadcaster(
         // Prefer caller-provided transferId (e.g., for encrypted media), else derive for FILE_TRANSFER
         val transferId = routed.transferId ?: (if (isFile) sha256Hex(packet.payload) else null)
 
+        // Latency: entering broadcaster (before fragmentation).
+        runCatching {
+            val typeName = MessageType.fromValue(packet.type)?.name ?: packet.type.toString()
+            LatencyLog.d(
+                "bcast_in",
+                "type" to typeName,
+                "transferId" to transferId,
+                "payloadBytes" to packet.payload.size,
+                "ttl" to packet.ttl
+            )
+        }
+
         // Check if we need to fragment
         if (!shouldSkipFragmentation && fragmentManager != null) {
             val fragments = try {
@@ -194,10 +208,28 @@ class BluetoothPacketBroadcaster(
                 return
             }
             if (fragments.size > 1) {
-                if (isFile) {
-                    Log.d(TAG, "🔀 File needs ${fragments.size} fragments")
+                LatencyLog.d(
+                    "frag_needed",
+                    "transferId" to transferId,
+                    "count" to fragments.size,
+                    "type" to (MessageType.fromValue(packet.type)?.name ?: packet.type.toString())
+                )
+
+                // Best-effort: decode fragment header for logging.
+                runCatching {
+                    val fp = FragmentPayload.decode(fragments.first().payload)
+                    if (fp != null) {
+                        LatencyLog.d(
+                            "frag_set",
+                            "transferId" to transferId,
+                            "fragId" to fp.getFragmentIDString(),
+                            "tot" to fp.total,
+                            "origType" to fp.originalType
+                        )
+                    }
                 }
-                Log.d(TAG, "Fragmenting packet into ${fragments.size} fragments")
+
+                // Transfer progress: start with total fragment count (for UI progress).
                 if (transferId != null) {
                     TransferProgressManager.start(transferId, fragments.size)
                 }
@@ -211,18 +243,31 @@ class BluetoothPacketBroadcaster(
                     val connectedDevices = connectionTracker.getConnectedDevices().values
                         .filter { it.isClient && it.gatt != null && it.characteristic != null }
 
-                    // 1) Server-side notifications: best-effort (no write callback). Keep existing behavior.
+                    // 1) Server-side notifications
                     subscribedDevices.forEach { _ ->
                         if (!isActive) return@launch
                         if (transferId != null && transferJobs[transferId]?.isCancelled == true) return@launch
                         fragments.forEach { fragment ->
                             if (!isActive) return@launch
                             if (transferId != null && transferJobs[transferId]?.isCancelled == true) return@launch
+                            runCatching {
+                                val fp = FragmentPayload.decode(fragment.payload)
+                                if (fp != null) {
+                                    LatencyLog.d(
+                                        "ble_ntf_call",
+                                        "transferId" to transferId,
+                                        "fragId" to fp.getFragmentIDString(),
+                                        "idx" to fp.index,
+                                        "tot" to fp.total,
+                                        "bytes" to (fragment.toBinaryData()?.size ?: -1)
+                                    )
+                                }
+                            }
                             broadcastSinglePacket(RoutedPacket(fragment, transferId = transferId), gattServer, characteristic)
                         }
                     }
 
-                    // 2) Client-side writes: sequential per device with await.
+                    // 2) Client-side writes
                     val awaiter = clientWriteAwaiter
                     connectedDevices.forEach { deviceConn ->
                         if (!isActive) return@launch
@@ -238,6 +283,21 @@ class BluetoothPacketBroadcaster(
                                     awaiter(deviceConn.device.address)
                                 } catch (_: Exception) {
                                     // If await fails, fall through and attempt write; broadcaster write call may fail.
+                                }
+                            }
+
+                            runCatching {
+                                val fp = FragmentPayload.decode(fragment.payload)
+                                if (fp != null) {
+                                    LatencyLog.d(
+                                        "ble_tx_call",
+                                        "transferId" to transferId,
+                                        "addr" to deviceConn.device.address,
+                                        "fragId" to fp.getFragmentIDString(),
+                                        "idx" to fp.index,
+                                        "tot" to fp.total,
+                                        "bytes" to (fragment.toBinaryData()?.size ?: -1)
+                                    )
                                 }
                             }
 
@@ -263,6 +323,17 @@ class BluetoothPacketBroadcaster(
         if (transferId != null) {
             TransferProgressManager.start(transferId, 1)
         }
+
+        // Latency: single packet path.
+        runCatching {
+            LatencyLog.d(
+                "ble_send_single",
+                "transferId" to transferId,
+                "type" to (MessageType.fromValue(packet.type)?.name ?: packet.type.toString()),
+                "bytes" to (packet.toBinaryData()?.size ?: -1)
+            )
+        }
+
         broadcastSinglePacket(routed, gattServer, characteristic)
         if (transferId != null) {
             TransferProgressManager.progress(transferId, 1, 1)

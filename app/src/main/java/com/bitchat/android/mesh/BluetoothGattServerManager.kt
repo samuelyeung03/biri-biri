@@ -10,10 +10,10 @@ import android.os.ParcelUuid
 import android.util.Log
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.util.AppConstants
+import com.bitchat.android.util.LatencyLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.*
 
 /**
  * Manages GATT server operations, advertising, and server-side connections
@@ -53,7 +53,11 @@ class BluetoothGattServerManager(
             if (subs.size > maxServer) {
                 val excess = subs.size - maxServer
                 subs.take(excess).forEach { d ->
-                    try { gattServer?.cancelConnection(d) } catch (_: Exception) { }
+                    try {
+                        gattServer?.cancelConnection(d)
+                    } catch (_: SecurityException) {
+                    } catch (_: Exception) {
+                    }
                 }
             }
         } catch (_: Exception) { }
@@ -109,7 +113,11 @@ class BluetoothGattServerManager(
             // Idempotent stop
             stopAdvertising()
             // Ensure server is closed if present
-            gattServer?.close()
+            try {
+                gattServer?.close()
+            } catch (_: SecurityException) {
+            } catch (_: Exception) {
+            }
             gattServer = null
             Log.i(TAG, "GATT server stopped (already inactive)")
             return
@@ -119,19 +127,28 @@ class BluetoothGattServerManager(
 
         connectionScope.launch {
             stopAdvertising()
-            
+
             // Try to cancel any active connections explicitly before closing
             try {
                 val devices = connectionTracker.getSubscribedDevices()
                 devices.forEach { d ->
-                    try { gattServer?.cancelConnection(d) } catch (_: Exception) { }
+                    try {
+                        gattServer?.cancelConnection(d)
+                    } catch (_: SecurityException) {
+                    } catch (_: Exception) {
+                    }
                 }
-            } catch (_: Exception) { }
-            
+            } catch (_: Exception) {
+            }
+
             // Close GATT server
-            gattServer?.close()
+            try {
+                gattServer?.close()
+            } catch (_: SecurityException) {
+            } catch (_: Exception) {
+            }
             gattServer = null
-            
+
             Log.i(TAG, "GATT server stopped")
         }
     }
@@ -155,11 +172,18 @@ class BluetoothGattServerManager(
         
         val serverCallback = object : BluetoothGattServerCallback() {
             override fun onNotificationSent(device: BluetoothDevice?, status: Int) {
-                if (!isActive){
+                // Guard against callbacks after service shutdown
+                if (!isActive) {
                     Log.d(TAG, "Server: Ignoring notification after shutdown")
                     return
                 }
                 if (status == BluetoothGatt.GATT_SUCCESS){
+                    // Latency: server-side notify completion.
+                    LatencyLog.d(
+                        "ble_ntf_done",
+                        "addr" to device?.address,
+                        "status" to status
+                    )
                     Log.d(TAG, "Notification sent successfully to ${device?.address}")
 
                     // Try to calculate RTT for ping packets (best-effort)
@@ -175,9 +199,15 @@ class BluetoothGattServerManager(
                         }
                     } catch (_: Exception) { /* ignore */ }
                 } else {
+                    LatencyLog.d(
+                        "ble_ntf_done",
+                        "addr" to device?.address,
+                        "status" to status
+                    )
                     Log.e(TAG, "Notification failed to ${device?.address}, status: $status")
                 }
             }
+
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 // Guard against callbacks after service shutdown
                 if (!isActive) {
@@ -245,19 +275,55 @@ class BluetoothGattServerManager(
                 }
                 
                 if (characteristic.uuid == AppConstants.Mesh.Gatt.CHARACTERISTIC_UUID) {
+                    // Latency: BLE RX (server write).
+                    LatencyLog.d("ble_rx", "addr" to device.address, "bytes" to value.size)
+
                     Log.i(TAG, "Server: Received packet from ${device.address}, size: ${value.size} bytes")
                     val packet = BitchatPacket.fromBinaryData(value)
                     if (packet != null) {
                         val peerID = packet.senderID.take(8).toByteArray().joinToString("") { "%02x".format(it) }
                         Log.d(TAG, "Server: Parsed packet type ${packet.type} from $peerID")
+
+                        // Best-effort: add packet meta for latency logs.
+                        LatencyLog.d(
+                            "ble_rx_pkt",
+                            "addr" to device.address,
+                            "type" to packet.type,
+                            "from" to peerID,
+                            "payloadBytes" to packet.payload.size
+                        )
+
+                        runCatching {
+                            if (packet.type == com.bitchat.android.protocol.MessageType.FRAGMENT.value) {
+                                val fp = com.bitchat.android.model.FragmentPayload.decode(packet.payload)
+                                if (fp != null) {
+                                    LatencyLog.d(
+                                        "ble_rx_frag",
+                                        "addr" to device.address,
+                                        "from" to peerID,
+                                        "fragId" to fp.getFragmentIDString(),
+                                        "idx" to fp.index,
+                                        "tot" to fp.total,
+                                        "origType" to fp.originalType,
+                                        "bytes" to fp.data.size
+                                    )
+                                }
+                            }
+                        }
+
                         delegate?.onPacketReceived(packet, peerID, device)
                     } else {
+                        LatencyLog.d("ble_rx_parse_fail", "addr" to device.address, "bytes" to value.size)
                         Log.w(TAG, "Server: Failed to parse packet from ${device.address}, size: ${value.size} bytes")
                         Log.w(TAG, "Server: Packet data: ${value.joinToString(" ") { "%02x".format(it) }}")
                     }
-                    
+
                     if (responseNeeded) {
-                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                        try {
+                            gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                        } catch (_: SecurityException) {
+                        } catch (_: Exception) {
+                        }
                     }
                 }
             }
@@ -290,7 +356,11 @@ class BluetoothGattServerManager(
                 }
                 
                 if (responseNeeded) {
-                    gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    try {
+                        gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                    } catch (_: SecurityException) {
+                    } catch (_: Exception) {
+                    }
                 }
             }
         }
@@ -300,6 +370,7 @@ class BluetoothGattServerManager(
             Log.d(TAG, "Cleaning up existing GATT server")
             try {
                 server.close()
+            } catch (_: SecurityException) {
             } catch (e: Exception) {
                 Log.w(TAG, "Error closing existing GATT server: ${e.message}")
             }
@@ -314,8 +385,12 @@ class BluetoothGattServerManager(
         }
         
         // Create new server
-        gattServer = bluetoothManager.openGattServer(context, serverCallback)
-        
+        gattServer = try {
+            bluetoothManager.openGattServer(context, serverCallback)
+        } catch (_: SecurityException) {
+            null
+        }
+
         // Create characteristic with notification support
         characteristic = BluetoothGattCharacteristic(
             AppConstants.Mesh.Gatt.CHARACTERISTIC_UUID,
@@ -336,8 +411,12 @@ class BluetoothGattServerManager(
         val service = BluetoothGattService(AppConstants.Mesh.Gatt.SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
         service.addCharacteristic(characteristic)
         
-        gattServer?.addService(service)
-        
+        try {
+            gattServer?.addService(service)
+        } catch (_: SecurityException) {
+        } catch (_: Exception) {
+        }
+
         Log.i(TAG, "GATT server setup complete")
     }
     
@@ -412,7 +491,12 @@ class BluetoothGattServerManager(
     private fun stopAdvertising() {
         if (!permissionManager.hasBluetoothPermissions() || bleAdvertiser == null) return
         try {
-            advertiseCallback?.let { cb -> bleAdvertiser.stopAdvertising(cb) }
+            advertiseCallback?.let { cb ->
+                try {
+                    bleAdvertiser.stopAdvertising(cb)
+                } catch (_: SecurityException) {
+                }
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Error stopping advertising: ${e.message}")
         }

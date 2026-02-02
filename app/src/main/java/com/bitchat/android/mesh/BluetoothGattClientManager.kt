@@ -11,6 +11,7 @@ import android.util.Log
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.protocol.MessageType
 import com.bitchat.android.util.AppConstants
+import com.bitchat.android.util.LatencyLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -668,13 +669,44 @@ class BluetoothGattClientManager(
             
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 val value = characteristic.value
+                // Latency: BLE RX (client notify).
+                LatencyLog.d("ble_rx", "addr" to gatt.device.address, "bytes" to value.size)
+
                 Log.i(TAG, "Client: Received packet from ${gatt.device.address}, size: ${value.size} bytes")
                 val packet = BitchatPacket.fromBinaryData(value)
                 if (packet != null) {
                     val peerID = packet.senderID.take(8).toByteArray().joinToString("") { "%02x".format(it) }
                     Log.d(TAG, "Client: Parsed packet type ${packet.type} from $peerID")
+
+                    LatencyLog.d(
+                        "ble_rx_pkt",
+                        "addr" to gatt.device.address,
+                        "type" to packet.type,
+                        "from" to peerID,
+                        "payloadBytes" to packet.payload.size
+                    )
+
+                    runCatching {
+                        if (packet.type == com.bitchat.android.protocol.MessageType.FRAGMENT.value) {
+                            val fp = com.bitchat.android.model.FragmentPayload.decode(packet.payload)
+                            if (fp != null) {
+                                LatencyLog.d(
+                                    "ble_rx_frag",
+                                    "addr" to gatt.device.address,
+                                    "from" to peerID,
+                                    "fragId" to fp.getFragmentIDString(),
+                                    "idx" to fp.index,
+                                    "tot" to fp.total,
+                                    "origType" to fp.originalType,
+                                    "bytes" to fp.data.size
+                                )
+                            }
+                        }
+                    }
+
                     delegate?.onPacketReceived(packet, peerID, gatt.device)
                 } else {
+                    LatencyLog.d("ble_rx_parse_fail", "addr" to gatt.device.address, "bytes" to value.size)
                     Log.w(TAG, "Client: Failed to parse packet from ${gatt.device.address}, size: ${value.size} bytes")
                     Log.w(TAG, "Client: Packet data: ${value.joinToString(" ") { "%02x".format(it) }}")
                 }

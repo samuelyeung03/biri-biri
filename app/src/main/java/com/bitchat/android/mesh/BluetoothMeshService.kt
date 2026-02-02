@@ -14,6 +14,7 @@ import com.bitchat.android.sync.GossipSyncManager
 import com.bitchat.android.util.toHexString
 import com.bitchat.android.rtc.RTCConnectionManager
 import com.bitchat.android.rtc.RTCSync
+import com.bitchat.android.util.LatencyLog
 import kotlinx.coroutines.*
 import java.util.*
 import kotlin.text.toByteArray
@@ -835,6 +836,14 @@ class BluetoothMeshService(private val context: Context) {
         }
         Log.d(TAG, "📹 sendVideo: recipient=${recipientPeerID ?: "BROADCAST"}, payloadSize=${payload.size} bytes, seq=$seq")
 
+        // Latency: entry into mesh layer (VIDEO payload already constructed).
+        LatencyLog.d(
+            "mesh_video_in",
+            "seq" to seq,
+            "rid" to (recipientPeerID ?: "BROADCAST"),
+            "bytes" to payload.size
+        )
+
         serviceScope.launch {
             try {
                 val packet = BitchatPacket(
@@ -849,9 +858,27 @@ class BluetoothMeshService(private val context: Context) {
                 )
                 val signed = signPacketBeforeBroadcast(packet)
                 val transferId = sha256Hex(payload)
+
+                LatencyLog.d(
+                    "mesh_pkt_create",
+                    "seq" to seq,
+                    "transferId" to transferId,
+                    "pktBytes" to (signed.toBinaryData()?.size ?: -1),
+                    "ttl" to signed.ttl,
+                    "to" to recipientPeerID
+                )
+
                 connectionManager.broadcastPacket(RoutedPacket(signed, transferId = transferId))
+
+                LatencyLog.d(
+                    "mesh_broadcast_call",
+                    "seq" to seq,
+                    "transferId" to transferId
+                )
+
                 Log.d(TAG, "🚀 sendVideo: Broadcasted packet for seq=$seq, transferId=$transferId")
             } catch (e: Exception) {
+                LatencyLog.d("mesh_send_err", "seq" to seq, "err" to (e.message ?: ""))
                 Log.e(TAG, "❌ Failed to send video frame for seq=$seq: ${e.message}")
             }
         }

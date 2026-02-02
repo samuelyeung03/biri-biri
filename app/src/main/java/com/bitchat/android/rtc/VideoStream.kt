@@ -7,6 +7,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.protocol.BitchatPacket
 import com.bitchat.android.util.AppConstants
+import com.bitchat.android.util.LatencyLog
 import com.bitchat.android.util.toHexString
 
 /**
@@ -34,6 +35,9 @@ class VideoStream(
 
     private var encoder: VideoEncoder? = null
     private var seqNumber: Int = 0
+
+    // Sender-only frame correlation ID.
+    private var frameId: Long = 0L
 
     // Camera is owned by VideoStream (capture -> encode -> send)
     private var camera: Camera? = null
@@ -72,7 +76,18 @@ class VideoStream(
 
         cam.startCamera(lifecycleOwner) { imageProxy ->
             try {
-                sendFrame(imageProxy, cameraRecipientId)
+                // Camera frame boundary (earliest point in this pipeline).
+                val fid = frameId++
+                LatencyLog.d(
+                    ev = "cam_frame",
+                    "fid" to fid,
+                    "imgTsNs" to imageProxy.imageInfo.timestamp,
+                    "w" to imageProxy.width,
+                    "h" to imageProxy.height,
+                    "rid" to recipientId
+                )
+
+                sendFrame(imageProxy, cameraRecipientId, fid)
             } catch (e: Exception) {
                 // If something throws before VideoEncoder closes it, close here.
                 runCatching { imageProxy.close() }
@@ -96,7 +111,13 @@ class VideoStream(
      * Encodes and sends the given [image]. Can be called from CameraX analyzer.
      */
     fun sendFrame(image: ImageProxy, recipientId: String?) {
+        // Backwards-compatible entry point.
+        sendFrame(image, recipientId, fid = null)
+    }
+
+    private fun sendFrame(image: ImageProxy, recipientId: String?, fid: Long?) {
         if (recipientId == null) {
+            LatencyLog.d("cam_drop", "fid" to fid, "reason" to "recipient_null")
             Log.w(TAG, "sendFrame: recipientId is null; dropping video frame")
             image.close()
             return
@@ -107,31 +128,40 @@ class VideoStream(
             encoderFactory().also { encoder = it }
         }
 
+        // Encode boundary (start).
+        LatencyLog.d("enc_start", "fid" to fid, "rid" to recipientId)
+
         enc.encode(
             image,
             onEncoded = { encoded ->
                 val seq = seqNumber and 0xFFFF
+
+                // Encode boundary (have access unit bytes).
+                LatencyLog.d("enc_out", "fid" to fid, "seq" to seq, "bytes" to encoded.size)
 
                 val payload = ByteArray(encoded.size + 2)
                 payload[0] = ((seq shr 8) and 0xFF).toByte()
                 payload[1] = (seq and 0xFF).toByte()
                 System.arraycopy(encoded, 0, payload, 2, encoded.size)
 
+                // Payload constructed.
+                LatencyLog.d("video_payload", "fid" to fid, "seq" to seq, "bytes" to payload.size)
+
                 seqNumber = (seq + 1) and 0xFFFF
 
                 val ms = meshService
                 if (ms == null) {
+                    LatencyLog.d("mesh_drop", "fid" to fid, "seq" to seq, "reason" to "mesh_null")
                     Log.w(TAG, "No BluetoothMeshService attached — call attachMeshService(meshService) before sending")
                     return@encode
                 }
 
-                if (Log.isLoggable(TAG, Log.DEBUG)) {
-                    Log.d(TAG, "sendFrame: seq=$seq encodedBytes=${encoded.size} payloadBytes=${payload.size} -> $recipientId")
-                }
-
+                LatencyLog.d("mesh_send_call", "fid" to fid, "seq" to seq, "rid" to recipientId)
                 try {
                     ms.sendVideo(recipientId, payload)
+                    LatencyLog.d("mesh_send_return", "fid" to fid, "seq" to seq)
                 } catch (e: Exception) {
+                    LatencyLog.d("mesh_send_err", "fid" to fid, "seq" to seq, "err" to (e.message ?: ""))
                     Log.e(TAG, "Failed to send video frame seq=$seq: ${e.message}")
                 }
             },
@@ -146,15 +176,17 @@ class VideoStream(
 
                 val ms = meshService
                 if (ms == null) {
+                    LatencyLog.d("mesh_drop", "fid" to fid, "seq" to 0, "reason" to "mesh_null")
                     Log.w(TAG, "No BluetoothMeshService attached — cannot send codec config")
                     return@encode
                 }
 
-                Log.d(TAG, "Sending VIDEO codec config bytes=${configBytes.size} to $recipientId")
+                LatencyLog.d("codec_cfg_send", "fid" to fid, "rid" to recipientId, "bytes" to configBytes.size)
 
                 try {
                     ms.sendVideo(recipientId, payload)
                 } catch (e: Exception) {
+                    LatencyLog.d("codec_cfg_err", "fid" to fid, "err" to (e.message ?: ""))
                     Log.e(TAG, "Failed to send video codec config: ${e.message}")
                 }
             }
@@ -171,22 +203,38 @@ class VideoStream(
         val seq = ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
         val data = if (payload.size > 2) payload.copyOfRange(2, payload.size) else ByteArray(0)
 
+        // Receiver boundary: got a VIDEO packet routed to video engine.
+        LatencyLog.d(
+            "rx_video",
+            "seq" to seq,
+            "bytes" to data.size,
+            "from" to packet.senderID.toHexString(),
+            "pktTsMs" to packet.timestamp.toLong()
+        )
+
         if (data.isEmpty()) {
             Log.w(TAG, "Received empty encoded video data seq=$seq")
             return
         }
 
-        // Send VIDEO_ACK disbaled for now
-        // meshService?.sendVideoAck(packet.senderID.toHexString(), seq)
-
         // seq=0 is reserved for codec config (VPS/SPS/PPS or SPS/PPS)
         if (seq == 0 && decoder is MediaCodecVideoDecoder) {
+            LatencyLog.d("rx_codec_cfg", "seq" to 0, "bytes" to data.size, "from" to packet.senderID.toHexString())
             Log.d(TAG, "Received VIDEO codec config seq=0 bytes=${data.size} from ${packet.senderID.toHexString()}")
             decoder.setCodecConfig(data)
             return
         }
 
-        decoder.decode(data, presentationTimeUs = packet.timestamp.toLong() * 1000L, onFrameDecoded = onFrameDecoded)
+        LatencyLog.d("dec_in", "seq" to seq, "bytes" to data.size)
+        decoder.decode(
+            data,
+            presentationTimeUs = packet.timestamp.toLong() * 1000L,
+            onFrameDecoded = { frame ->
+                // Render boundary: decoded frame delivered to UI callback.
+                LatencyLog.d("render_cb", "seq" to seq, "w" to frame.width, "h" to frame.height)
+                onFrameDecoded?.invoke(frame)
+            }
+        )
     }
 
     fun handleVideoAck(packet: BitchatPacket) {
