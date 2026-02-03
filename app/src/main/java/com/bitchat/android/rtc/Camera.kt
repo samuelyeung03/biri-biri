@@ -76,17 +76,37 @@ class Camera(
                 onFrame(imageProxy)
             }
 
-            val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+            val cameraSelectorCandidates = listOf(
+                CameraSelector.Builder().requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL).build(),
+                CameraSelector.DEFAULT_FRONT_CAMERA,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                CameraSelector.Builder().build()
+            )
 
-            try {
-                cameraProvider?.unbindAll()
-                cameraProvider?.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    imageAnalysis
-                )
-            } catch (exc: Exception) {
-                Log.e(TAG, "Use case binding failed", exc)
+            var bound = false
+            cameraProvider?.unbindAll()
+            for (selector in cameraSelectorCandidates) {
+                val hasCamera = runCatching { cameraProvider?.hasCamera(selector) == true }.getOrDefault(false)
+                if (!hasCamera && selector != cameraSelectorCandidates.last()) {
+                    Log.w(TAG, "Camera selector not available, trying fallback")
+                    continue
+                }
+                try {
+                    cameraProvider?.bindToLifecycle(
+                        lifecycleOwner,
+                        selector,
+                        imageAnalysis
+                    )
+                    bound = true
+                    Log.d(TAG, "Camera bound with selector: $selector")
+                    break
+                } catch (exc: Exception) {
+                    Log.w(TAG, "Use case binding failed for selector: $selector", exc)
+                }
+            }
+
+            if (!bound) {
+                Log.e(TAG, "Use case binding failed: no available camera selector")
             }
 
         }, ContextCompat.getMainExecutor(context))
