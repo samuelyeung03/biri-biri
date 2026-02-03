@@ -72,13 +72,32 @@ class ChatViewModel(
     private val _videoCallPeerId = androidx.lifecycle.MutableLiveData<String?>(null)
     val videoCallPeerId: LiveData<String?> = _videoCallPeerId
 
+    private val _videoCallStats = androidx.lifecycle.MutableLiveData<VideoCallStats?>(null)
+    val videoCallStats: LiveData<VideoCallStats?> = _videoCallStats
+
     internal fun setVideoCallPeerId(peerId: String?) {
         _videoCallPeerId.postValue(peerId)
+        if (peerId == null) {
+            _videoCallStats.postValue(null)
+        } else {
+            val vp = meshService.rtcConnectionManager.getNegotiatedVideoParams(peerId)
+            if (vp != null) {
+                _videoCallStats.postValue(
+                    VideoCallStats(
+                        width = vp.width,
+                        height = vp.height,
+                        codec = vp.codec,
+                        bitrateBps = vp.bitrateBps
+                    )
+                )
+            }
+        }
     }
 
     fun clearVideoCallPeerId() {
         // RTC callbacks can arrive off the main thread; use postValue for thread-safety.
         _videoCallPeerId.postValue(null)
+        _videoCallStats.postValue(null)
     }
 
     // Replace CommandProcessor creation to inject video call callback
@@ -230,6 +249,17 @@ class ChatViewModel(
                             activeVideoCallIsOutgoing = false
                             setVideoCallPeerId(evt.fromPeerId)
 
+                            evt.videoParams?.let { vp ->
+                                _videoCallStats.postValue(
+                                    VideoCallStats(
+                                        width = vp.width,
+                                        height = vp.height,
+                                        codec = vp.codec,
+                                        bitrateBps = vp.bitrateBps
+                                    )
+                                )
+                            }
+
                             // TWO_WAY: callee starts sending after sending ACCEPT.
                             if (evt.mode == com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY) {
                                 _shouldStartLocalVideo.postValue(true)
@@ -246,6 +276,17 @@ class ChatViewModel(
                             activeVideoCallIsOutgoing = true
                             setVideoCallPeerId(evt.fromPeerId)
                             _shouldStartLocalVideo.postValue(true)
+
+                            evt.videoParams?.let { vp ->
+                                _videoCallStats.postValue(
+                                    VideoCallStats(
+                                        width = vp.width,
+                                        height = vp.height,
+                                        codec = vp.codec,
+                                        bitrateBps = vp.bitrateBps
+                                    )
+                                )
+                            }
                         }
                     }
 
@@ -256,6 +297,7 @@ class ChatViewModel(
                             activeVideoCallMode = null
                             activeVideoCallIsOutgoing = false
                             _shouldStartLocalVideo.postValue(false)
+                            _videoCallStats.postValue(null)
 
                             // Ensure full teardown on remote hangup too.
                             runCatching { meshService.rtcConnectionManager.endVideoCall(evt.fromPeerId) }

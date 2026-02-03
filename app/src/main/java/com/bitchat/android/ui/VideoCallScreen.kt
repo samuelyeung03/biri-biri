@@ -17,8 +17,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 
 /**
  * Full-screen video call UI.
@@ -28,6 +31,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun VideoCallScreen(
     modifier: Modifier = Modifier,
+    videoCallStats: VideoCallStats? = null,
     onHangUp: () -> Unit,
     onRemoteSurfaceAvailable: (Surface) -> Unit,
     onRemoteSurfaceDestroyed: () -> Unit
@@ -66,6 +70,26 @@ fun VideoCallScreen(
             },
             update = { /* no-op */ }
         )
+
+        if (videoCallStats != null) {
+            val bitrateKbps = (videoCallStats.bitrateBps / 1000).coerceAtLeast(0)
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp),
+                color = Color.Black.copy(alpha = 0.6f),
+                shape = MaterialTheme.shapes.small
+            ) {
+                Text(
+                    text = "${videoCallStats.width}x${videoCallStats.height} • ${videoCallStats.codec} • ${bitrateKbps} kbps",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
 
         // Ensure callback is removed when composable disposes.
         DisposableEffect(Unit) {

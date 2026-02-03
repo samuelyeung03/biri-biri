@@ -240,6 +240,7 @@ class MainActivity : OrientationAwareActivity() {
                     val outgoingMode by chatViewModel.outgoingVideoCallMode.observeAsState(com.bitchat.android.rtc.RTCSync.Mode.TWO_WAY)
                     val shouldStartLocalVideo = chatViewModel.shouldStartLocalVideo.observeAsState(false)
                     val shouldSendInvite = chatViewModel.shouldSendVideoInvite.observeAsState(false)
+                    val videoCallStats = chatViewModel.videoCallStats.observeAsState(null)
 
                     // Initiator path: send INVITE exactly once when user started /videocall.
                     LaunchedEffect(peerId, outgoingMode, shouldSendInvite.value) {
@@ -275,6 +276,7 @@ class MainActivity : OrientationAwareActivity() {
 
                     VideoCallScreen(
                         modifier = modifier,
+                        videoCallStats = videoCallStats.value,
                         onHangUp = {
                             try {
                                 // Full teardown: stop camera/encoder + release remote surface decoder.
