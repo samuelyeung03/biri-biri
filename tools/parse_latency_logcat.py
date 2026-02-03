@@ -30,7 +30,7 @@ import statistics
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 def _to_int(v: Optional[str]) -> Optional[int]:
@@ -114,13 +114,26 @@ def stats_ms(values_ns: Iterable[int]) -> Optional[Dict[str, Any]]:
     vals = list(values_ns)
     if not vals:
         return None
-    ms = [ns_to_ms(v) for v in vals]
+    ms = sorted(ns_to_ms(v) for v in vals)
+
+    def pct(p: float) -> float:
+        if not ms:
+            return 0.0
+        if len(ms) == 1:
+            return ms[0]
+        # nearest-rank percentile
+        k = int(round((p / 100.0) * (len(ms) - 1)))
+        k = max(0, min(len(ms) - 1, k))
+        return ms[k]
+
     return {
         "count": len(ms),
         "avg_ms": statistics.mean(ms),
-        "p50_ms": statistics.median(ms),
-        "min_ms": min(ms),
-        "max_ms": max(ms),
+        "p50_ms": pct(50),
+        "p90_ms": pct(90),
+        "p99_ms": pct(99),
+        "min_ms": ms[0],
+        "max_ms": ms[-1],
     }
 
 
@@ -130,9 +143,107 @@ def print_stats(name: str, values_ns: List[int]) -> None:
         print(f"  {name}: no data")
         return
     print(
-        f"  {name}: count={s['count']} avg={s['avg_ms']:.2f}ms p50={s['p50_ms']:.2f}ms "
+        f"  {name}: count={s['count']} avg={s['avg_ms']:.2f}ms "
+        f"p50={s['p50_ms']:.2f}ms p90={s['p90_ms']:.2f}ms p99={s['p99_ms']:.2f}ms "
         f"min={s['min_ms']:.2f}ms max={s['max_ms']:.2f}ms"
     )
+
+
+def _print_top_events(counts: Dict[str, int], limit: int = 15) -> None:
+    if not counts:
+        return
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    print(f"Top events (by count, top {len(top)}):")
+    for ev, c in top:
+        print(f"  {ev}: {c}")
+
+
+def _group_delays_by_key(
+    events: List[Event],
+    ev_start: str,
+    ev_end: str,
+    make_key,
+) -> Tuple[List[int], Dict[str, List[int]]]:
+    """Generic matcher to compute delays between two event types.
+
+    Returns:
+      - all_delays list
+      - per_group mapping (string key -> delays)
+
+    Matching strategy:
+      - Extract a tuple key from each event via make_key(e)
+      - Use earliest timestamp per key for start/end
+      - Delay = end - start where end >= start
+    """
+
+    start_t: Dict[tuple, int] = {}
+    end_t: Dict[tuple, int] = {}
+
+    for e in events:
+        if e.ev not in (ev_start, ev_end):
+            continue
+        k = make_key(e)
+        if k is None:
+            continue
+        if e.ev == ev_start:
+            prev = start_t.get(k)
+            if prev is None or e.t < prev:
+                start_t[k] = e.t
+        else:
+            prev = end_t.get(k)
+            if prev is None or e.t < prev:
+                end_t[k] = e.t
+
+    all_delays: List[int] = []
+    per: Dict[str, List[int]] = {}
+
+    for k, t0 in start_t.items():
+        t1 = end_t.get(k)
+        if t1 is None:
+            continue
+        d = t1 - t0
+        if d < 0:
+            continue
+        all_delays.append(d)
+
+        group_label = str(k)
+        per.setdefault(group_label, []).append(d)
+
+    return all_delays, per
+
+
+def _print_group_table(
+    title: str,
+    per_group: Dict[str, List[int]],
+    limit: int = 10,
+    sort_by: str = "p90",
+) -> None:
+    if not per_group:
+        return
+
+    rows: List[Tuple[float, str, Dict[str, Any]]] = []
+    for k, delays in per_group.items():
+        s = stats_ms(delays)
+        if not s:
+            continue
+        score = {
+            "avg": s["avg_ms"],
+            "p50": s["p50_ms"],
+            "p90": s["p90_ms"],
+            "p99": s["p99_ms"],
+            "max": s["max_ms"],
+        }.get(sort_by, s["p90_ms"])
+        rows.append((float(score), k, s))
+
+    rows.sort(key=lambda r: (-r[0], r[1]))
+    rows = rows[:limit]
+
+    print(title)
+    print("  key | count | avg | p50 | p90 | p99 | max (ms)")
+    for _, k, s in rows:
+        print(
+            f"  {k} | {s['count']} | {s['avg_ms']:.2f} | {s['p50_ms']:.2f} | {s['p90_ms']:.2f} | {s['p99_ms']:.2f} | {s['max_ms']:.2f}"
+        )
 
 
 def first_by_ev(events: List[Event], ev: str) -> Optional[Event]:
@@ -258,41 +369,63 @@ def analyze_fragment_queue_wait(events: List[Event]) -> None:
     We report a single aggregate stat (not per-idx) as requested.
     """
 
-    # Build maps: (fragId, idx) -> earliest timestamp
-    emit_t: Dict[tuple[str, int], int] = {}
-    tx_t: Dict[tuple[str, int], int] = {}
+    def key_emit_tx(e: Event) -> Optional[tuple]:
+        frag_id = e.get("fragId")
+        idx = e.geti("idx")
+        if frag_id is None or idx is None:
+            return None
+        return (frag_id, idx)
+
+    emit_t: Dict[tuple, int] = {}
+    tx_t: Dict[tuple, int] = {}
 
     for e in events:
         if e.ev not in ("frag_emit", "ble_tx_call"):
             continue
-        frag_id = e.get("fragId")
-        idx = e.geti("idx")
-        if frag_id is None or idx is None:
+        k = key_emit_tx(e)
+        if k is None:
             continue
-        key = (frag_id, idx)
         if e.ev == "frag_emit":
-            prev = emit_t.get(key)
+            prev = emit_t.get(k)
             if prev is None or e.t < prev:
-                emit_t[key] = e.t
+                emit_t[k] = e.t
         else:
-            prev = tx_t.get(key)
+            prev = tx_t.get(k)
             if prev is None or e.t < prev:
-                tx_t[key] = e.t
+                tx_t[k] = e.t
 
     delays: List[int] = []
-    for key, t_emit in emit_t.items():
-        t_tx = tx_t.get(key)
+    per_addr: Dict[str, List[int]] = {}
+
+    # For per-addr breakdown, we need addr; it exists on ble_tx_call, so we join via key.
+    tx_addr: Dict[tuple, str] = {}
+    for e in events:
+        if e.ev != "ble_tx_call":
+            continue
+        k = key_emit_tx(e)
+        if k is None:
+            continue
+        addr = e.get("addr")
+        if addr is not None:
+            tx_addr[k] = addr
+
+    for k, t_emit in emit_t.items():
+        t_tx = tx_t.get(k)
         if t_tx is None:
             continue
         d = t_tx - t_emit
-        if d >= 0:
-            delays.append(d)
+        if d < 0:
+            continue
+        delays.append(d)
+        addr = tx_addr.get(k, "(unknown)")
+        per_addr.setdefault(addr, []).append(d)
 
     if not delays:
         return
 
     print("Fragment send queue (frag_emit -> ble_tx_call, matched by fragId+idx):")
     print_stats("emit -> ble_tx_call", delays)
+    _print_group_table("Fragment send queue by addr (top p90):", {k: v for k, v in per_addr.items() if v}, limit=8, sort_by="p90")
 
 
 def analyze_scheduler_queue_delay(events: List[Event]) -> None:
@@ -304,7 +437,7 @@ def analyze_scheduler_queue_delay(events: List[Event]) -> None:
     Metric: t(sched_deq) - t(sched_enq)
     """
 
-    def _key(e: Event) -> Optional[tuple]:
+    def _match_key(e: Event) -> Optional[tuple]:
         addr = e.get("addr")
         prio = e.get("priority")
         transfer_id = e.get("transferId")
@@ -316,7 +449,6 @@ def analyze_scheduler_queue_delay(events: List[Event]) -> None:
         if frag_id is not None and idx is not None:
             return (addr, prio, transfer_id, frag_id, idx)
 
-        # Non-fragment / fallback
         return (addr, prio, transfer_id)
 
     enq: Dict[tuple, int] = {}
@@ -325,7 +457,7 @@ def analyze_scheduler_queue_delay(events: List[Event]) -> None:
     for e in events:
         if e.ev not in ("sched_enq", "sched_deq"):
             continue
-        k = _key(e)
+        k = _match_key(e)
         if k is None:
             continue
         if e.ev == "sched_enq":
@@ -338,19 +470,29 @@ def analyze_scheduler_queue_delay(events: List[Event]) -> None:
                 deq[k] = e.t
 
     delays: List[int] = []
+    per_addr: Dict[str, List[int]] = {}
+    per_prio: Dict[str, List[int]] = {}
+
     for k, t_enq in enq.items():
         t_deq = deq.get(k)
         if t_deq is None:
             continue
         d = t_deq - t_enq
-        if d >= 0:
-            delays.append(d)
+        if d < 0:
+            continue
+        delays.append(d)
+        addr = k[0] if len(k) >= 1 else "(unknown)"
+        prio = k[1] if len(k) >= 2 else "(unknown)"
+        per_addr.setdefault(str(addr), []).append(d)
+        per_prio.setdefault(str(prio), []).append(d)
 
     if not delays:
         return
 
     print("Scheduler queue (sched_enq -> sched_deq):")
     print_stats("enq -> deq", delays)
+    _print_group_table("Scheduler queue by priority (top p90):", per_prio, limit=6, sort_by="p90")
+    _print_group_table("Scheduler queue by addr (top p90):", per_addr, limit=8, sort_by="p90")
 
 
 def build_event_counts(events: List[Event]) -> Dict[str, int]:
@@ -428,7 +570,9 @@ def summarize_file(fp: Path) -> None:
     print(f"\n=== {fp} ===")
     print(f"role: {role}")
     print(f"events: {len(events)}")
+    _print_top_events(counts, limit=15)
 
+    # Core analyses
     analyze_sender_by_fid(events)
     analyze_receiver_by_seq(events)
     analyze_fragments_by_id(events)
