@@ -33,6 +33,14 @@ class VideoStream(
         private const val TAG = "VideoStream"
     }
 
+    private var currentWidth: Int = width
+    private var currentHeight: Int = height
+    private var currentCodec: String = codec
+    private var currentBitrateBps: Int = bitrateBps
+
+    private var lastContext: Context? = null
+    private var lastLifecycleOwner: LifecycleOwner? = null
+
     private var encoder: VideoEncoder? = null
     private var seqNumber: Int = 0
 
@@ -66,11 +74,13 @@ class VideoStream(
         recipientId: String?
     ) {
         cameraRecipientId = recipientId
+        lastContext = context
+        lastLifecycleOwner = lifecycleOwner
 
         val cam = camera ?: Camera(
             context = context,
-            width = width,
-            height = height,
+            width = currentWidth,
+            height = currentHeight,
             targetFps = AppConstants.VideoCall.DEFAULT_FRAME_RATE
         ).also { camera = it }
 
@@ -125,7 +135,16 @@ class VideoStream(
 
         val enc = encoder ?: run {
             sentCodecConfigForRecipient = null
-            encoderFactory().also { encoder = it }
+            if (negotiatedParams == null) {
+                encoderFactory().also { encoder = it }
+            } else {
+                VideoEncoder(
+                    codecType = currentCodec,
+                    width = currentWidth,
+                    height = currentHeight,
+                    bitRate = currentBitrateBps
+                ).also { encoder = it }
+            }
         }
 
         // Encode boundary (start).
@@ -265,14 +284,29 @@ class VideoStream(
     }
 
     fun updateSendConfig(params: RTCSync.VideoParams) {
+        val prevWidth = currentWidth
+        val prevHeight = currentHeight
+
         negotiatedParams = params
+        currentWidth = params.width
+        currentHeight = params.height
+        currentCodec = params.codec
+        currentBitrateBps = params.bitrateBps
 
         // Recreate encoder with new params next frame.
         runCatching { encoder?.release() }
         encoder = null
         sentCodecConfigForRecipient = null
 
-        // NOTE: The Camera capture resolution is configured by this VideoStream's constructor width/height.
-        // If you need to change capture resolution dynamically, recreate VideoStream or restart camera.
+        // If capture is running, restart camera to apply new resolution.
+        if (camera != null && (prevWidth != currentWidth || prevHeight != currentHeight)) {
+            val ctx = lastContext
+            val owner = lastLifecycleOwner
+            val recipient = cameraRecipientId
+            stopCamera()
+            if (ctx != null && owner != null) {
+                startCamera(context = ctx, lifecycleOwner = owner, recipientId = recipient)
+            }
+        }
     }
 }
